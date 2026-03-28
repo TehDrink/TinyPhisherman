@@ -8,13 +8,33 @@ export type SquatterCategory =
   | "Malware Drop"
   | "Unknown";
 
+export interface EvidenceSnippet {
+  text: string;
+  reason: string;
+}
+
+export interface PassiveChecks {
+  domainAgeDays: number | null;
+  hasSSL: boolean;
+  redirectCount: number;
+  registrar: string | null;
+  dnsResolved?: boolean;
+  ipAddresses?: string[];
+  hasMX?: boolean;
+  nameservers?: string[];
+  tlsIssuer?: string | null;
+  tlsValidFrom?: string | null;
+  tlsValidTo?: string | null;
+  finalResolvedUrl?: string | null;
+}
+
 // ── TinyFish raw results ───────────────────────────────────────────────────────
 
 export interface TinyFishResult {
   url: string;
-  screenshot: string; // base64 PNG
+  screenshot: string;
   domText: string;
-  finalUrl: string; // after redirects
+  finalUrl: string;
   statusCode: number;
   pageTitle: string;
   hasLoginForm: boolean;
@@ -24,19 +44,13 @@ export interface TinyFishResult {
 // ── LLM analysis ──────────────────────────────────────────────────────────────
 
 export interface LLMAnalysis {
-  manipulationScore: number; // 0–100
+  manipulationScore: number;
   squatterCategory: SquatterCategory;
   reasoning: string;
   redFlags: string[];
-}
-
-// ── Passive checks (mocked) ────────────────────────────────────────────────────
-
-export interface PassiveChecks {
-  domainAgeDays: number | null;
-  hasSSL: boolean;
-  redirectCount: number;
-  registrar: string | null;
+  impersonatedBrand?: string | null;
+  credentialIntent?: boolean;
+  evidenceSnippets?: EvidenceSnippet[];
 }
 
 // ── Feature A: Single scan ────────────────────────────────────────────────────
@@ -51,33 +65,46 @@ export interface ScanResult {
   manipulationScore: number;
   squatterCategory: SquatterCategory;
   passiveChecks: PassiveChecks;
-  screenshot: string; // base64 PNG
+  screenshot: string;
   reasoning: string;
   redFlags: string[];
-  scannedAt: string; // ISO timestamp
+  scannedAt: string;
+  finalUrl?: string;
+  pageTitle?: string;
+  externalLinks?: string[];
+  impersonatedBrand?: string | null;
+  credentialIntent?: boolean;
+  evidenceSnippets?: EvidenceSnippet[];
 }
 
 // ── Feature B: Brand hunt ─────────────────────────────────────────────────────
 
 export interface HuntRequest {
-  domain: string; // e.g. "google.com"
+  domain: string;
 }
 
 export interface TyposquatVariant {
   domain: string;
   threatLevel: ThreatLevel;
-  visualSimilarity: number; // 0–100
+  visualSimilarity: number;
   manipulationScore: number;
   squatterCategory: SquatterCategory;
-  screenshot: string; // base64 PNG
+  screenshot: string;
   liveStatus: "live" | "parked" | "unreachable";
+  reasoning?: string;
+  passiveChecks?: PassiveChecks;
+  finalUrl?: string;
+  pageTitle?: string;
+  evidenceSnippets?: EvidenceSnippet[];
+  impersonatedBrand?: string | null;
 }
 
 export interface HuntResult {
   originalDomain: string;
-  originalScreenshot: string; // base64 PNG
+  originalScreenshot: string;
   variants: TyposquatVariant[];
-  huntedAt: string; // ISO timestamp
+  huntedAt: string;
+  discoveryMethod?: "dnstwist" | "heuristic";
 }
 
 // ── API response wrappers ──────────────────────────────────────────────────────

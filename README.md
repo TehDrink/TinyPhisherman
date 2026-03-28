@@ -1,36 +1,48 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# TinyPhisherman
 
-## Getting Started
+TinyPhisherman is a backend-first phishing investigation app for the TinyFish hackathon. It supports:
+- Active verification of suspicious URLs with TinyFish web automation
+- Proactive typosquat hunting with `dnstwist` fallback logic
+- Passive domain intelligence for DNS, TLS, RDAP, and redirects
+- Threat scoring from OpenAI structured analysis with heuristic fallback
 
-First, run the development server:
+## Environment
+
+Create `.env.local` with:
+
+```bash
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4.1-mini
+TINYFISH_API_KEY=
+TINYFISH_API_URL=https://agent.tinyfish.ai
+DNSTWIST_PATH=dnstwist
+HUNT_MAX_CANDIDATES=12
+HUNT_MAX_VARIANTS=5
+```
+
+Notes:
+- If `OPENAI_API_KEY` is missing, the app falls back to heuristic phishing scoring.
+- If `dnstwist` is unavailable, typosquat discovery falls back to the local generator.
+
+## Run
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Build
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run build
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The build script uses webpack instead of Turbopack because Turbopack was unstable in this environment when processing CSS.
 
-## Learn More
+## API Routes
 
-To learn more about Next.js, take a look at the following resources:
+- `POST /api/scan`
+  - body: `{ "url": "https://example.com" }`
+- `POST /api/hunt`
+  - body: `{ "domain": "example.com" }`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Both routes preserve the current summary fields used by the frontend and add richer evidence fields for later UI work.

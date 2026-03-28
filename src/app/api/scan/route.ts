@@ -31,8 +31,8 @@ export async function POST(req: NextRequest) {
     // 1. Deploy TinyFish agent
     const agentResult = await visitWithAgent(target, { interact: true });
 
-    // 2. Passive checks (mocked)
-    const passive = runPassiveChecks(target);
+    // 2. Passive checks
+    const passive = await runPassiveChecks(target);
 
     // 3. LLM analysis
     const llm = await analyzeDOM(
@@ -54,6 +54,12 @@ export async function POST(req: NextRequest) {
       reasoning: llm.reasoning,
       redFlags: llm.redFlags,
       scannedAt: new Date().toISOString(),
+      finalUrl: agentResult.finalUrl ?? passive.finalResolvedUrl ?? target,
+      pageTitle: agentResult.pageTitle,
+      externalLinks: agentResult.externalLinks,
+      impersonatedBrand: llm.impersonatedBrand ?? null,
+      credentialIntent: llm.credentialIntent ?? false,
+      evidenceSnippets: llm.evidenceSnippets ?? [],
     };
 
     return NextResponse.json<ApiResponse<ScanResult>>({ ok: true, data: result });

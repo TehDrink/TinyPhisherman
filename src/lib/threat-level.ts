@@ -1,37 +1,26 @@
 import type { LLMAnalysis, PassiveChecks, ThreatLevel } from "@/types";
 
-/**
- * Calculates the final threat level from all available signals.
- *
- * Rules (in priority order):
- * 1. Critical  → manipulation > 75  OR  squatter = "Credential Harvester"/"Malware Drop"
- * 2. High      → manipulation 61-75  OR  domain age < 30 days + login form
- * 3. Medium    → manipulation 31-60  OR  no SSL + redirect > 2
- * 4. Low       → everything else
- */
 export function calcThreatLevel(
   llm: LLMAnalysis,
   passive: PassiveChecks,
   hasLoginForm: boolean
 ): ThreatLevel {
-  if (
-    llm.manipulationScore > 75 ||
-    llm.squatterCategory === "Credential Harvester" ||
-    llm.squatterCategory === "Malware Drop"
-  ) {
+  if (llm.squatterCategory === "Credential Harvester") {
     return "Critical";
   }
 
   if (
-    llm.manipulationScore > 60 ||
-    ((passive.domainAgeDays ?? 999) < 30 && hasLoginForm)
+    llm.squatterCategory === "Malware Drop" ||
+    llm.manipulationScore > 75 ||
+    ((passive.domainAgeDays ?? 999) < 14 && (hasLoginForm || llm.credentialIntent))
   ) {
     return "High";
   }
 
   if (
-    llm.manipulationScore > 30 ||
-    (!passive.hasSSL && passive.redirectCount > 2)
+    llm.manipulationScore >= 40 ||
+    (!passive.hasSSL && passive.redirectCount > 1) ||
+    ((passive.domainAgeDays ?? 999) < 45 && passive.dnsResolved)
   ) {
     return "Medium";
   }
@@ -39,18 +28,30 @@ export function calcThreatLevel(
   return "Low";
 }
 
-/**
- * Same logic for typosquat variants — additionally considers visual similarity.
- */
 export function calcVariantThreatLevel(
   llm: LLMAnalysis,
-  visualSimilarity: number
+  visualSimilarity: number,
+  passive?: PassiveChecks
 ): ThreatLevel {
-  if (visualSimilarity > 80) return "Critical";
-  if (llm.manipulationScore > 75 || llm.squatterCategory === "Credential Harvester") {
+  if (visualSimilarity > 80 || llm.squatterCategory === "Credential Harvester") {
     return "Critical";
   }
-  if (visualSimilarity > 60 || llm.manipulationScore > 60) return "High";
-  if (visualSimilarity > 40 || llm.manipulationScore > 30) return "Medium";
+
+  if (
+    llm.squatterCategory === "Malware Drop" ||
+    visualSimilarity > 60 ||
+    llm.manipulationScore > 75
+  ) {
+    return "High";
+  }
+
+  if (
+    visualSimilarity > 40 ||
+    llm.manipulationScore >= 45 ||
+    ((passive?.domainAgeDays ?? 999) < 30 && passive?.dnsResolved)
+  ) {
+    return "Medium";
+  }
+
   return "Low";
 }
