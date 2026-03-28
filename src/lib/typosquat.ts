@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { discoverCirclCandidates } from "@/lib/circl";
 
 const execFileAsync = promisify(execFile);
 
@@ -54,10 +55,17 @@ export function generateTyposquats(domain: string): string[] {
 }
 
 export async function discoverTyposquatCandidates(domain: string): Promise<{
-  method: "dnstwist" | "heuristic";
+  method: string;
   candidates: string[];
 }> {
   const dnstwistPath = process.env.DNSTWIST_PATH ?? "dnstwist";
+  const circlCandidates = await discoverCirclCandidates(domain);
+  const discovered = new Set<string>(circlCandidates.filter((entry) => entry !== domain));
+  const methods = new Set<string>();
+
+  if (circlCandidates.length > 0) {
+    methods.add("circl");
+  }
 
   try {
     const { stdout } = await execFileAsync(dnstwistPath, ["--json", domain], {
@@ -70,13 +78,22 @@ export async function discoverTyposquatCandidates(domain: string): Promise<{
       .filter((entry) => entry && entry !== domain);
 
     if (candidates.length > 0) {
+      candidates.forEach((candidate) => discovered.add(candidate));
+      methods.add("dnstwist");
       return {
-        method: "dnstwist",
-        candidates: Array.from(new Set(candidates)),
+        method: Array.from(methods).join("+"),
+        candidates: Array.from(discovered),
       };
     }
   } catch {
     // Fallback below.
+  }
+
+  if (discovered.size > 0) {
+    return {
+      method: Array.from(methods).join("+"),
+      candidates: Array.from(discovered),
+    };
   }
 
   return {

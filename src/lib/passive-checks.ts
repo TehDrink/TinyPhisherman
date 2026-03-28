@@ -19,6 +19,8 @@ export async function runPassiveChecks(input: string): Promise<PassiveChecks> {
     domainAgeDays: rdapInfo?.domainAgeDays ?? null,
     hasSSL: Boolean(tlsInfo),
     redirectCount: redirectInfo.redirectCount,
+    httpReachable: redirectInfo.reachable,
+    httpStatusCode: redirectInfo.statusCode,
     registrar: rdapInfo?.registrar ?? null,
     dnsResolved: dnsInfo.dnsResolved,
     ipAddresses: dnsInfo.ipAddresses,
@@ -168,6 +170,8 @@ function extractRegistrar(
 async function traceRedirects(url: string): Promise<{
   redirectCount: number;
   finalUrl: string | null;
+  reachable: boolean;
+  statusCode: number | null;
 }> {
   let current = url;
   let redirectCount = 0;
@@ -189,11 +193,16 @@ async function traceRedirects(url: string): Promise<{
         continue;
       }
 
-      return { redirectCount, finalUrl: current };
+      return {
+        redirectCount,
+        finalUrl: current,
+        reachable: res.status >= 200 && res.status < 500,
+        statusCode: res.status,
+      };
     } catch {
       break;
     }
   }
 
-  return { redirectCount, finalUrl: current };
+  return { redirectCount, finalUrl: current, reachable: false, statusCode: null };
 }

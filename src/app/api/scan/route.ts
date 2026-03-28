@@ -11,6 +11,7 @@ import { visitWithAgent } from "@/lib/tinyfish";
 import { analyzeDOM } from "@/lib/llm";
 import { runPassiveChecks } from "@/lib/passive-checks";
 import { calcThreatLevel } from "@/lib/threat-level";
+import { triageWithUrlscan } from "@/lib/urlscan";
 import type { ScanResult, ApiResponse } from "@/types";
 
 export async function GET(req: NextRequest) {
@@ -62,35 +63,47 @@ async function scanUrl(
   timeoutMs: number | undefined,
   useTinyfish: boolean
 ): Promise<ScanResult> {
-  // Normalise URL
   const target = url.startsWith("http") ? url : `https://${url}`;
+  const testedUrls = deriveVariants(target);
 
-  // 1. Deploy TinyFish agent (optional)
-  const agentResult = useTinyfish
+  const [passive, urlscanHttps, urlscanHttp] = await Promise.all([
+    runPassiveChecks(target),
+    triageWithUrlscan(testedUrls.httpsUrl),
+    testedUrls.httpUrl !== testedUrls.httpsUrl
+      ? triageWithUrlscan(testedUrls.httpUrl)
+      : Promise.resolve(null),
+  ]);
+
+  const urlscan = pickWorseUrlscan(urlscanHttps, urlscanHttp);
+  const shouldRunTinyfish = useTinyfish && isReachableForTinyfish(passive);
+  const tinyfishSkipReason = !useTinyfish
+    ? "TinyFish exploration was disabled for this scan."
+    : shouldRunTinyfish
+      ? null
+      : "TinyFish exploration was skipped because the site was not reachable during preliminary checks.";
+  const agentResult = shouldRunTinyfish
     ? await visitWithAgent(target, { interact: true, timeoutMs })
     : {
         url: target,
         screenshot: "",
         domText: "",
-        finalUrl: target,
-        statusCode: 0,
-        pageTitle: "",
+        finalUrl: passive.finalResolvedUrl ?? target,
+        statusCode: passive.httpStatusCode ?? 0,
+        pageTitle: urlscan?.pageTitle ?? "",
         hasLoginForm: false,
-        externalLinks: [],
+        formFields: [] as string[],
+        formAction: null,
+        offDomainSubmit: false,
+        externalLinks: [] as string[],
       };
-
-  // 2. Passive checks
-  const passive = await runPassiveChecks(target);
-
-  // 3. LLM analysis
   const llm = await analyzeDOM(
     agentResult.finalUrl ?? target,
     agentResult.domText,
-    agentResult.hasLoginForm
+    agentResult.formFields,
+    agentResult.offDomainSubmit,
   );
 
-  // 4. Threat level
-  const threatLevel = calcThreatLevel(llm, passive, agentResult.hasLoginForm);
+  const threatLevel = calcThreatLevel(llm, passive, agentResult.offDomainSubmit, urlscan);
 
   return {
     url: target,
@@ -99,7 +112,7 @@ async function scanUrl(
     squatterCategory: llm.squatterCategory,
     passiveChecks: passive,
     screenshot: agentResult.screenshot,
-    reasoning: llm.reasoning,
+    reasoning: tinyfishSkipReason ? `${llm.reasoning} ${tinyfishSkipReason}` : llm.reasoning,
     redFlags: llm.redFlags,
     scannedAt: new Date().toISOString(),
     finalUrl: agentResult.finalUrl ?? passive.finalResolvedUrl ?? target,
@@ -108,7 +121,35 @@ async function scanUrl(
     impersonatedBrand: llm.impersonatedBrand ?? null,
     credentialIntent: llm.credentialIntent ?? false,
     evidenceSnippets: llm.evidenceSnippets ?? [],
+    urlscan,
+    testedUrls: [testedUrls.httpsUrl, testedUrls.httpUrl].filter(
+      (entry, index, list) => list.indexOf(entry) === index
+    ),
   };
+}
+
+function isReachableForTinyfish(passive: ScanResult["passiveChecks"]): boolean {
+  return Boolean(passive?.dnsResolved && passive?.httpReachable);
+}
+
+function deriveVariants(raw: string): { httpUrl: string; httpsUrl: string } {
+  const trimmed = raw.trim();
+  const withoutProtocol = trimmed.replace(/^https?:\/\//i, "");
+  return {
+    httpUrl: `http://${withoutProtocol}`,
+    httpsUrl: `https://${withoutProtocol}`,
+  };
+}
+
+function pickWorseUrlscan<T extends { verdictMalicious: boolean; verdictScore: number }>(
+  a: T | null,
+  b: T | null
+): T | null {
+  if (!a) return b;
+  if (!b) return a;
+  if (a.verdictMalicious && !b.verdictMalicious) return a;
+  if (b.verdictMalicious && !a.verdictMalicious) return b;
+  return a.verdictScore >= b.verdictScore ? a : b;
 }
 
 function toOptionalNumber(value: string | null): number | undefined {

@@ -5,6 +5,7 @@
  */
 
 import type { TinyFishResult } from "@/types";
+import { buildTinyfishGoal } from "@/prompts/tinyfish";
 
 const TINYFISH_API_URL = process.env.TINYFISH_API_URL ?? "https://agent.tinyfish.ai";
 const TINYFISH_API_KEY = process.env.TINYFISH_API_KEY ?? "";
@@ -47,7 +48,8 @@ interface TinyFishStructuredResult {
   final_url?: string;
   page_title?: string;
   dom_text?: string;
-  has_login_form?: boolean;
+  form_fields?: string[];
+  form_action?: string | null;
   external_links?: string[];
   screenshot?: string;
 }
@@ -76,7 +78,7 @@ export async function visitWithAgent(
       },
       body: JSON.stringify({
         url,
-        goal: buildGoal(url, options.interact ?? true),
+        goal: buildTinyfishGoal(url, options.interact ?? true),
         browser_profile: options.interact ? "stealth" : "lite",
         api_integration: "tinyphisherman",
       }),
@@ -109,6 +111,11 @@ export async function visitWithAgent(
   }
 
   const result = normalizeResult(data.resultJson ?? data.result);
+  const formFields = result.form_fields ?? [];
+  const formAction = result.form_action ?? null;
+  const sensitiveFields = new Set(["password", "otp", "credit_card", "cvv", "ssn"]);
+  const hasLoginForm = formFields.some((f) => sensitiveFields.has(f));
+  const offDomainSubmit = deriveOffDomainSubmit(formAction, result.final_url ?? url);
 
   return {
     url,
@@ -117,7 +124,10 @@ export async function visitWithAgent(
     finalUrl: result.final_url ?? url,
     statusCode: 200,
     pageTitle: result.page_title ?? "",
-    hasLoginForm: Boolean(result.has_login_form),
+    hasLoginForm,
+    formFields,
+    formAction,
+    offDomainSubmit,
     externalLinks: Array.isArray(result.external_links) ? result.external_links : [],
   };
 }
@@ -166,41 +176,19 @@ export async function visitMany(
   return results;
 }
 
-function buildGoal(url: string, interact: boolean): string {
-  const interactionInstructions = interact
-    ? [
-        "Act as a phishing investigator imitating a cautious victim.",
-        "Explore the landing page and relevant internal flows.",
-        "Click suspicious calls to action, login buttons, reset-password links, or payment prompts when visible.",
-        "If a form appears, inspect it and you may type obviously fake bait values like test@example.com, fake passwords, or dummy names.",
-        "Do not use real secrets, do not complete irreversible purchases, and do not intentionally submit harmful payloads.",
-      ].join(" ")
-    : [
-        "Act as a phishing investigator.",
-        "Observe the page without aggressive interaction.",
-        "Inspect visible forms, links, branding, and phishing cues.",
-      ].join(" ");
-
-  return [
-    interactionInstructions,
-    `Target URL: ${url}.`,
-    "Return strict JSON only with this exact shape:",
-    "{",
-    '  "final_url": "string",',
-    '  "page_title": "string",',
-    '  "dom_text": "string",',
-    '  "has_login_form": true,',
-    '  "external_links": ["string"],',
-    '  "screenshot": "string"',
-    "}",
-    "Rules:",
-    "- final_url must be the final loaded page URL.",
-    "- dom_text should contain the most relevant visible text for phishing analysis, truncated if needed.",
-    "- has_login_form should be true if the page asks for credentials, OTP, payment info, or account recovery data.",
-    "- external_links should include outbound or suspicious destinations when visible.",
-    "- screenshot should be a base64 PNG string if available, otherwise an empty string.",
-    "- If a field cannot be determined, return a safe empty value instead of adding extra keys.",
-  ].join("\n");
+function deriveOffDomainSubmit(formAction: string | null, pageUrl: string): boolean {
+  if (!formAction) return false;
+  // Relative paths submit to the same domain
+  if (!formAction.startsWith("http://") && !formAction.startsWith("https://")) return false;
+  try {
+    const actionHost = new URL(formAction).hostname.toLowerCase();
+    const pageHost = new URL(pageUrl.startsWith("http") ? pageUrl : `https://${pageUrl}`).hostname.toLowerCase();
+    // Strip leading www for comparison
+    const normalize = (h: string) => h.replace(/^www\./, "");
+    return normalize(actionHost) !== normalize(pageHost);
+  } catch {
+    return false;
+  }
 }
 
 function normalizeResult(value: unknown): TinyFishStructuredResult {
@@ -213,7 +201,8 @@ function normalizeResult(value: unknown): TinyFishStructuredResult {
     final_url: asString(candidate.final_url),
     page_title: asString(candidate.page_title),
     dom_text: asString(candidate.dom_text),
-    has_login_form: typeof candidate.has_login_form === "boolean" ? candidate.has_login_form : false,
+    form_fields: asStringArray(candidate.form_fields) ?? [],
+    form_action: typeof candidate.form_action === "string" ? candidate.form_action : null,
     external_links: asStringArray(candidate.external_links),
     screenshot: asString(candidate.screenshot),
   };
@@ -241,7 +230,7 @@ async function startAsyncRun(url: string, interact: boolean): Promise<string> {
     },
     body: JSON.stringify({
       url,
-      goal: buildGoal(url, interact),
+      goal: buildTinyfishGoal(url, interact),
       browser_profile: interact ? "stealth" : "lite",
       api_integration: "tinyphisherman",
     }),

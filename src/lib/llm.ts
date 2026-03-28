@@ -1,5 +1,10 @@
 import type { EvidenceSnippet, LLMAnalysis, SquatterCategory } from "@/types";
 import { lexicalSimilarity } from "@/lib/typosquat";
+import {
+  buildPhishingAnalysisSystemPrompt,
+  buildPhishingAnalysisUserPrompt,
+  buildVisualSimilaritySystemPrompt,
+} from "@/prompts/analysis";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
@@ -19,12 +24,42 @@ interface SimilarityOutput {
   reasoning: string;
 }
 
+interface AnalysisContextInput {
+  expectedDomain?: string;
+  domainAgeDays?: number | null;
+  hasSSL?: boolean;
+  registrar?: string | null;
+  urlscanMalicious?: boolean;
+  urlscanScore?: number | null;
+}
+
+interface UrlContext {
+  hostname: string;
+  registrableDomain: string;
+  pathname: string;
+  expectedRegistrableDomain: string | null;
+  suspiciousSignals: string[];
+  suspiciousScore: number;
+  rawIpHost: boolean;
+  deepSubdomain: boolean;
+  hasPunycode: boolean;
+  hasAuthKeyword: boolean;
+  isExactExpectedDomain: boolean;
+  isLookalikeToExpected: boolean;
+}
+
+const SENSITIVE_FIELDS = new Set(["password", "otp", "credit_card", "cvv", "ssn"]);
+
 export async function analyzeDOM(
   url: string,
   domText: string,
-  hasLoginForm: boolean
+  formFields: string[],
+  offDomainSubmit: boolean,
+  context: AnalysisContextInput = {}
 ): Promise<LLMAnalysis> {
-  const fallback = heuristicAnalysis(url, domText, hasLoginForm);
+  const hasLoginForm = formFields.some((f) => SENSITIVE_FIELDS.has(f));
+  const fallback = heuristicAnalysis(url, domText, hasLoginForm, offDomainSubmit, context);
+  const urlContext = inspectUrl(url, context.expectedDomain);
   if (!OPENAI_API_KEY) return fallback;
 
   try {
@@ -66,28 +101,43 @@ export async function analyzeDOM(
           "evidence_snippets",
         ],
       },
-      systemPrompt:
-        "You are a phishing analyst. Score urgency, fear, authority impersonation, credential requests, and malware-delivery behavior. Return strict JSON only.",
-      userContent: `URL: ${url}
-Has login form: ${hasLoginForm}
-
-PAGE CONTENT START
-${domText.slice(0, 12000)}
-PAGE CONTENT END`,
+      systemPrompt: buildPhishingAnalysisSystemPrompt(),
+      userContent: buildPhishingAnalysisUserPrompt({
+        url,
+        hostname: urlContext.hostname,
+        registrableDomain: urlContext.registrableDomain,
+        pathname: urlContext.pathname,
+        expectedLegitimateDomain: urlContext.expectedRegistrableDomain,
+        formFields,
+        offDomainSubmit,
+        suspiciousSignals: urlContext.suspiciousSignals,
+        domText,
+        domainAgeDays: context.domainAgeDays,
+        hasSSL: context.hasSSL,
+        registrar: context.registrar,
+        urlscanMalicious: context.urlscanMalicious,
+        urlscanScore: context.urlscanScore,
+      }),
     });
 
-    return {
-      manipulationScore: clamp(parsed.manipulation_score),
-      squatterCategory: parsed.squatter_category ?? fallback.squatterCategory,
-      reasoning: parsed.reasoning || fallback.reasoning,
-      redFlags: sanitizeStringArray(parsed.red_flags, fallback.redFlags),
-      impersonatedBrand: parsed.impersonated_brand ?? fallback.impersonatedBrand ?? null,
-      credentialIntent:
-        typeof parsed.credential_intent === "boolean"
-          ? parsed.credential_intent
-          : fallback.credentialIntent,
-      evidenceSnippets: sanitizeEvidence(parsed.evidence_snippets, fallback.evidenceSnippets ?? []),
-    };
+    const normalized = normalizeAnalysis(
+      {
+        manipulationScore: clamp(parsed.manipulation_score),
+        squatterCategory: parsed.squatter_category ?? fallback.squatterCategory,
+        reasoning: parsed.reasoning || fallback.reasoning,
+        redFlags: sanitizeStringArray(parsed.red_flags, fallback.redFlags),
+        impersonatedBrand: parsed.impersonated_brand ?? fallback.impersonatedBrand ?? null,
+        credentialIntent:
+          typeof parsed.credential_intent === "boolean"
+            ? parsed.credential_intent
+            : fallback.credentialIntent,
+        evidenceSnippets: sanitizeEvidence(parsed.evidence_snippets, fallback.evidenceSnippets ?? []),
+      },
+      urlContext,
+      offDomainSubmit
+    );
+
+    return normalized;
   } catch {
     return fallback;
   }
@@ -125,8 +175,7 @@ export async function compareScreenshots(
         },
         required: ["similarity_score", "reasoning"],
       },
-      systemPrompt:
-        "You compare legitimate and suspicious website screenshots for phishing similarity. Return strict JSON only.",
+      systemPrompt: buildVisualSimilaritySystemPrompt(),
       userContent: [
         { type: "text", text: `Original domain: ${originalDomain}` },
         { type: "image_url", image_url: { url: `data:image/png;base64,${originalBase64}` } },
@@ -191,28 +240,54 @@ async function openAIJson<T>({
   return JSON.parse(content) as T;
 }
 
-function heuristicAnalysis(url: string, domText: string, hasLoginForm: boolean): LLMAnalysis {
+function heuristicAnalysis(
+  url: string,
+  domText: string,
+  hasLoginForm: boolean,
+  offDomainSubmit: boolean,
+  context: AnalysisContextInput
+): LLMAnalysis {
   const text = domText.toLowerCase();
+  const urlContext = inspectUrl(url, context.expectedDomain);
   const redFlags: string[] = [];
   const evidenceSnippets: EvidenceSnippet[] = [];
-  let score = 5;
+  let score = 2 + urlContext.suspiciousScore;
 
   score += addSignal(text, /\b(urgent|immediately|act now|verify now|suspended|locked)\b/g, 12, redFlags, "Urgency language");
   score += addSignal(text, /\b(password|otp|2fa|security code|credit card|wallet phrase|seed phrase)\b/g, 18, redFlags, "Sensitive credential request");
   score += addSignal(text, /\b(download|install|update browser|apk|setup\.exe)\b/g, 20, redFlags, "Potential malware delivery language");
   score += addSignal(text, /\b(microsoft|google|apple|paypal|amazon|coinbase|outlook|office 365)\b/g, 10, redFlags, "Possible brand impersonation");
 
-  if (hasLoginForm) {
-    score += 20;
-    redFlags.push("Login or sensitive input form detected");
+  const impersonatedBrand = detectBrand(`${url} ${text}`);
+  const domainMatchesBrand = impersonatedBrand
+    ? doesDomainMatchBrand(urlContext.registrableDomain, urlContext.hostname, impersonatedBrand)
+    : false;
+  const deceptiveBrandMismatch = Boolean(
+    impersonatedBrand && !domainMatchesBrand && !urlContext.isExactExpectedDomain
+  );
+
+  // Off-domain form submission is a strong signal regardless of other context
+  if (offDomainSubmit) {
+    score += 30;
+    redFlags.push("Form submits credentials to a different domain");
+  } else if (hasLoginForm) {
+    // A credential form on a suspicious/off-brand domain is concerning, but on a
+    // legitimate-looking domain it adds very little signal
+    if (deceptiveBrandMismatch || urlContext.isLookalikeToExpected || urlContext.suspiciousScore >= 18) {
+      score += 20;
+      redFlags.push("Credential form on a suspicious or off-brand domain");
+    }
+    // Login form alone on a clean domain: no score bump
   }
 
-  const impersonatedBrand = detectBrand(`${url} ${text}`);
   if (impersonatedBrand) {
     evidenceSnippets.push({
       text: impersonatedBrand,
       reason: "Recognized brand terms appear in the page content or URL.",
     });
+    if (deceptiveBrandMismatch) {
+      redFlags.push(`Brand mismatch: content references ${impersonatedBrand} on a different domain`);
+    }
   }
 
   const credentialIntent =
@@ -225,11 +300,36 @@ function heuristicAnalysis(url: string, domText: string, hasLoginForm: boolean):
     });
   }
 
-  const squatterCategory = categorize(text, hasLoginForm);
+  if (urlContext.suspiciousSignals.length > 0) {
+    evidenceSnippets.push({
+      text: urlContext.hostname,
+      reason: `Hostname signals: ${urlContext.suspiciousSignals.join(", ")}.`,
+    });
+  }
+
+  if (domainMatchesBrand && !deceptiveBrandMismatch && !urlContext.isLookalikeToExpected) {
+    score -= 16;
+  }
+
+  const squatterCategory = categorize(
+    text,
+    hasLoginForm,
+    urlContext,
+    impersonatedBrand,
+    credentialIntent,
+    deceptiveBrandMismatch
+  );
   return {
     manipulationScore: clamp(score),
     squatterCategory,
-    reasoning: buildReasoning(clamp(score), squatterCategory, credentialIntent, impersonatedBrand),
+    reasoning: buildReasoning(
+      clamp(score),
+      squatterCategory,
+      credentialIntent,
+      impersonatedBrand,
+      urlContext,
+      deceptiveBrandMismatch
+    ),
     redFlags: Array.from(new Set(redFlags)).slice(0, 6),
     impersonatedBrand,
     credentialIntent,
@@ -250,15 +350,30 @@ function addSignal(
   return Math.min(matches.length * points, points * 2);
 }
 
-function categorize(text: string, hasLoginForm: boolean): SquatterCategory {
+function categorize(
+  text: string,
+  hasLoginForm: boolean,
+  urlContext: UrlContext,
+  impersonatedBrand: string | null,
+  credentialIntent: boolean,
+  deceptiveBrandMismatch: boolean
+): SquatterCategory {
   if (/\b(download|install|setup\.exe|apk|update browser)\b/.test(text)) {
     return "Malware Drop";
   }
-  if (hasLoginForm || /\b(password|otp|sign in|login|credit card|verify identity)\b/.test(text)) {
-    return "Credential Harvester";
-  }
-  if (/\b(domain for sale|buy this domain|parking|sponsored listings|ads)\b/.test(text)) {
+  if (/\b(domain for sale|buy this domain|parking|sponsored listings|ads)\b/.test(text) && !credentialIntent) {
     return "Parked/Ads";
+  }
+  if (
+    credentialIntent &&
+    (
+      deceptiveBrandMismatch ||
+      urlContext.isLookalikeToExpected ||
+      urlContext.suspiciousScore >= 18 ||
+      (Boolean(impersonatedBrand) && !urlContext.isExactExpectedDomain)
+    )
+  ) {
+    return "Credential Harvester";
   }
   return "Unknown";
 }
@@ -267,7 +382,9 @@ function buildReasoning(
   score: number,
   category: SquatterCategory,
   credentialIntent: boolean,
-  impersonatedBrand: string | null
+  impersonatedBrand: string | null,
+  urlContext: UrlContext,
+  deceptiveBrandMismatch: boolean
 ): string {
   const parts = [
     `The page scored ${score}/100 for phishing manipulation signals.`,
@@ -275,6 +392,10 @@ function buildReasoning(
     credentialIntent ? "Sensitive input requests were detected." : "No strong sensitive input request was detected.",
   ];
   if (impersonatedBrand) parts.push(`Possible impersonated brand: ${impersonatedBrand}.`);
+  if (deceptiveBrandMismatch) parts.push("The referenced brand does not align with the observed domain.");
+  if (urlContext.suspiciousSignals.length > 0) {
+    parts.push(`URL signals: ${urlContext.suspiciousSignals.join(", ")}.`);
+  }
   return parts.join(" ");
 }
 
@@ -311,4 +432,189 @@ function sanitizeEvidence(value: unknown, fallback: EvidenceSnippet[]): Evidence
 function clamp(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function normalizeAnalysis(
+  analysis: LLMAnalysis,
+  urlContext: UrlContext,
+  hasLoginForm: boolean
+): LLMAnalysis {
+  const category = adjustCategory(
+    analysis.squatterCategory,
+    analysis.impersonatedBrand ?? null,
+    urlContext,
+    Boolean(analysis.credentialIntent || hasLoginForm)
+  );
+
+  let manipulationScore = analysis.manipulationScore;
+  if (
+    category !== "Credential Harvester" &&
+    analysis.squatterCategory === "Credential Harvester" &&
+    urlContext.suspiciousScore < 18
+  ) {
+    manipulationScore = Math.max(0, manipulationScore - 18);
+  }
+
+  const redFlags = [...analysis.redFlags];
+  if (urlContext.suspiciousSignals.length > 0 && redFlags.length < 6) {
+    redFlags.push(`Suspicious URL signals: ${urlContext.suspiciousSignals.join(", ")}`);
+  }
+
+  return {
+    ...analysis,
+    manipulationScore: clamp(manipulationScore),
+    squatterCategory: category,
+    redFlags: Array.from(new Set(redFlags)).slice(0, 6),
+  };
+}
+
+function adjustCategory(
+  category: SquatterCategory,
+  impersonatedBrand: string | null,
+  urlContext: UrlContext,
+  credentialIntent: boolean
+): SquatterCategory {
+  if (category === "Malware Drop" || category === "Parked/Ads") {
+    return category;
+  }
+
+  const domainMatchesBrand = impersonatedBrand
+    ? doesDomainMatchBrand(urlContext.registrableDomain, urlContext.hostname, impersonatedBrand)
+    : false;
+
+  if (
+    category === "Credential Harvester" &&
+    credentialIntent &&
+    !urlContext.isLookalikeToExpected &&
+    !urlContext.rawIpHost &&
+    !urlContext.hasPunycode &&
+    urlContext.suspiciousScore < 18 &&
+    (domainMatchesBrand || urlContext.isExactExpectedDomain)
+  ) {
+    return "Unknown";
+  }
+
+  return category;
+}
+
+function inspectUrl(url: string, expectedDomain?: string): UrlContext {
+  const parsed = new URL(url.startsWith("http") ? url : `https://${url}`);
+  const hostname = parsed.hostname.toLowerCase();
+  const registrableDomain = toRegistrableDomain(hostname);
+  const expectedRegistrableDomain = expectedDomain
+    ? toRegistrableDomain(expectedDomain.toLowerCase())
+    : null;
+  const labels = hostname.split(".").filter(Boolean);
+  const suspiciousSignals: string[] = [];
+  let suspiciousScore = 0;
+
+  const rawIpHost = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname);
+  const hasPunycode = hostname.includes("xn--");
+  const deepSubdomain = labels.length >= 4;
+  const hyphenCount = (hostname.match(/-/g) ?? []).length;
+  const hasAuthKeyword = /\b(login|signin|verify|secure|account|auth|wallet|support|update|recover)\b/.test(
+    hostname.replace(/\./g, " ")
+  );
+
+  if (rawIpHost) {
+    suspiciousSignals.push("raw IP host");
+    suspiciousScore += 24;
+  }
+  if (hasPunycode) {
+    suspiciousSignals.push("punycode hostname");
+    suspiciousScore += 20;
+  }
+  if (deepSubdomain) {
+    suspiciousSignals.push("deep subdomain chain");
+    suspiciousScore += 8;
+  }
+  if (hyphenCount >= 2) {
+    suspiciousSignals.push("multiple hyphens");
+    suspiciousScore += 8;
+  }
+  if (hasAuthKeyword) {
+    suspiciousSignals.push("credential-themed hostname");
+    suspiciousScore += 10;
+  }
+  if (parsed.pathname.length > 40 || /\/(verify|login|signin|security|update|recover|auth)\b/i.test(parsed.pathname)) {
+    suspiciousSignals.push("credential-themed path");
+    suspiciousScore += 6;
+  }
+
+  const isExactExpectedDomain = Boolean(
+    expectedRegistrableDomain && registrableDomain === expectedRegistrableDomain
+  );
+  const isLookalikeToExpected = Boolean(
+    expectedRegistrableDomain &&
+      registrableDomain !== expectedRegistrableDomain &&
+      lexicalSimilarity(registrableDomain, expectedRegistrableDomain) >= 65
+  );
+
+  if (isLookalikeToExpected) {
+    suspiciousSignals.push("lookalike to expected domain");
+    suspiciousScore += 18;
+  }
+
+  return {
+    hostname,
+    registrableDomain,
+    pathname: parsed.pathname || "/",
+    expectedRegistrableDomain,
+    suspiciousSignals,
+    suspiciousScore,
+    rawIpHost,
+    deepSubdomain,
+    hasPunycode,
+    hasAuthKeyword,
+    isExactExpectedDomain,
+    isLookalikeToExpected,
+  };
+}
+
+function toRegistrableDomain(input: string): string {
+  const hostname = input.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+  const labels = hostname.split(".").filter(Boolean);
+  if (labels.length <= 2) return hostname;
+
+  const joinedLastTwo = labels.slice(-2).join(".");
+  const joinedLastThree = labels.slice(-3).join(".");
+  const secondLevelTlds = new Set([
+    "co.uk",
+    "com.sg",
+    "com.au",
+    "co.jp",
+    "com.br",
+    "co.in",
+    "com.my",
+    "com.hk",
+  ]);
+
+  if (secondLevelTlds.has(joinedLastTwo)) {
+    return joinedLastThree;
+  }
+
+  return joinedLastTwo;
+}
+
+function doesDomainMatchBrand(
+  registrableDomain: string,
+  hostname: string,
+  brand: string
+): boolean {
+  const normalizedBrand = brand.toLowerCase();
+  const brandTokens: Record<string, string[]> = {
+    microsoft: ["microsoft", "microsoftonline", "live", "outlook"],
+    google: ["google", "gmail", "gstatic", "youtube"],
+    apple: ["apple", "icloud"],
+    paypal: ["paypal"],
+    amazon: ["amazon", "aws"],
+    coinbase: ["coinbase"],
+    outlook: ["outlook", "office", "live", "microsoft"],
+    "office 365": ["office", "microsoft", "live"],
+  };
+
+  const tokens = brandTokens[normalizedBrand] ?? [normalizedBrand.replace(/\s+/g, "")];
+  return tokens.some(
+    (token) => registrableDomain.includes(token) || hostname.includes(token)
+  );
 }

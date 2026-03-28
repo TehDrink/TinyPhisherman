@@ -17,6 +17,8 @@ export interface PassiveChecks {
   domainAgeDays: number | null;
   hasSSL: boolean;
   redirectCount: number;
+  httpReachable?: boolean;
+  httpStatusCode?: number | null;
   registrar: string | null;
   dnsResolved?: boolean;
   ipAddresses?: string[];
@@ -28,6 +30,22 @@ export interface PassiveChecks {
   finalResolvedUrl?: string | null;
 }
 
+export interface UrlscanVerdict {
+  scanUuid: string;
+  screenshotUrl?: string | null;
+  verdictMalicious: boolean;
+  verdictScore: number;
+  ipAddress?: string | null;
+  country?: string | null;
+  server?: string | null;
+  hosting?: string | null;
+  domainsContacted: string[];
+  ipsContacted: string[];
+  httpTransactions?: number;
+  pageTitle?: string | null;
+  scannedAt?: string | null;
+}
+
 // ── TinyFish raw results ───────────────────────────────────────────────────────
 
 export interface TinyFishResult {
@@ -37,7 +55,11 @@ export interface TinyFishResult {
   finalUrl: string;
   statusCode: number;
   pageTitle: string;
+  /** @deprecated Use formFields + formAction instead for richer form context */
   hasLoginForm: boolean;
+  formFields: string[];       // e.g. ["email", "password", "otp"]
+  formAction: string | null;  // raw action attribute of the most sensitive form
+  offDomainSubmit: boolean;   // true if form_action resolves outside the page's domain
   externalLinks: string[];
 }
 
@@ -75,6 +97,8 @@ export interface ScanResult {
   impersonatedBrand?: string | null;
   credentialIntent?: boolean;
   evidenceSnippets?: EvidenceSnippet[];
+  urlscan?: UrlscanVerdict | null;
+  testedUrls?: string[];
 }
 
 // ── Feature B: Brand hunt ─────────────────────────────────────────────────────
@@ -97,6 +121,7 @@ export interface TyposquatVariant {
   pageTitle?: string;
   evidenceSnippets?: EvidenceSnippet[];
   impersonatedBrand?: string | null;
+  urlscan?: UrlscanVerdict | null;
 }
 
 export interface HuntResult {
@@ -104,7 +129,7 @@ export interface HuntResult {
   originalScreenshot: string;
   variants: TyposquatVariant[];
   huntedAt: string;
-  discoveryMethod?: "dnstwist" | "heuristic";
+  discoveryMethod?: string;
 }
 
 // ── API response wrappers ──────────────────────────────────────────────────────

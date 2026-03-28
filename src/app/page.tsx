@@ -10,6 +10,8 @@ type PassiveChecks = {
   domainAgeDays?: number | null;
   hasSSL?: boolean;
   redirectCount?: number;
+  httpReachable?: boolean;
+  httpStatusCode?: number | null;
   registrar?: string | null;
   dnsResolved?: boolean;
   ipAddresses?: string[];
@@ -58,6 +60,10 @@ type TyposquatVariant = {
   pageTitle?: string;
   evidenceSnippets?: EvidenceSnippet[];
   impersonatedBrand?: string | null;
+  urlscan?: {
+    verdictMalicious?: boolean;
+    verdictScore?: number;
+  } | null;
 };
 
 type HuntResult = {
@@ -752,6 +758,10 @@ function GeneratePanel({
     (item) => item.threatLevel?.toLowerCase() === "critical"
   ).length;
   const topVariant = variants[0];
+  const previewVariant =
+    variants.find((item) => item.liveStatus === "live") ??
+    variants.find((item) => item.liveStatus !== "parked") ??
+    variants[0];
   const topVariantTone = toneFromThreat(topVariant?.threatLevel);
   const originalShot =
     result?.originalScreenshot && result.originalScreenshot.length > 0
@@ -783,7 +793,7 @@ function GeneratePanel({
   };
 
   useEffect(() => {
-    if (!enablePreview || !topVariant?.domain) {
+    if (!enablePreview || !previewVariant?.domain || previewVariant.liveStatus !== "live") {
       setPreviewUrl(null);
       setPreviewError(null);
       setPreviewLoading(false);
@@ -794,13 +804,15 @@ function GeneratePanel({
     let cancelled = false;
 
     const run = async () => {
-      setPreviewTarget(topVariant.domain ?? null);
+      setPreviewTarget(previewVariant.domain ?? null);
       setPreviewUrl(null);
       setPreviewError(null);
       setPreviewLoading(true);
 
       try {
-        const res = await fetch(`/api/scan/preview?url=${encodeURIComponent(topVariant.domain ?? "")}`);
+        const res = await fetch(
+          `/api/scan/preview?url=${encodeURIComponent(previewVariant.domain ?? "")}`
+        );
         const json = (await res.json()) as
           | { ok: true; data: { streamingUrl: string } }
           | { ok: false; error: string };
@@ -828,7 +840,7 @@ function GeneratePanel({
     return () => {
       cancelled = true;
     };
-  }, [enablePreview, topVariant?.domain]);
+  }, [enablePreview, previewVariant?.domain, previewVariant?.liveStatus]);
 
   const activityItems = useMemo<ActivityItem[]>(() => {
     const items: ActivityItem[] = [
@@ -856,15 +868,19 @@ function GeneratePanel({
           ? previewError
           : previewLoading
             ? `Streaming preview for ${previewTarget ?? "shortlisted domain"}.`
-            : topVariant?.domain
-              ? `Most suspicious variant: ${topVariant.domain}.`
+            : previewVariant?.domain
+              ? previewVariant.liveStatus === "live"
+                ? `Most suspicious live variant: ${previewVariant.domain}.`
+                : `Top ranked variant ${previewVariant.domain} was triaged without TinyFish preview.`
               : "Shortlisted variants will be verified here.",
         status: previewError
           ? "error"
           : previewLoading
             ? "active"
-            : topVariant?.domain
-              ? "done"
+            : previewVariant?.domain
+              ? previewVariant.liveStatus === "live"
+                ? "done"
+                : "pending"
               : loading
                 ? "active"
                 : "pending",
@@ -872,7 +888,16 @@ function GeneratePanel({
     ];
 
     return items;
-  }, [liveCount, loading, previewError, previewLoading, previewTarget, result, topVariant?.domain]);
+  }, [
+    liveCount,
+    loading,
+    previewError,
+    previewLoading,
+    previewTarget,
+    previewVariant?.domain,
+    previewVariant?.liveStatus,
+    result,
+  ]);
 
   const progress = useMemo(() => {
     if (error) return 100;
@@ -941,7 +966,7 @@ function GeneratePanel({
           title="Hunt pipeline"
           progress={progress}
           items={activityItems}
-          activeTarget={previewTarget ?? domain}
+          activeTarget={previewTarget ?? previewVariant?.domain ?? domain}
         />
 
         <EvidenceCard title="Ranked hunt summary">
@@ -1016,6 +1041,10 @@ function GeneratePanel({
               </div>
             ) : !enablePreview ? (
               <p className="status">Preview is disabled.</p>
+            ) : previewVariant?.liveStatus !== "live" ? (
+              <p className="status">
+                No live suspicious variant currently qualifies for TinyFish preview.
+              </p>
             ) : previewLoading ? (
               <p className="status">TinyFish is attaching a remote browser to the top candidate.</p>
             ) : (
@@ -1071,7 +1100,12 @@ function GeneratePanel({
                     <button
                       className="btn btn-ghost"
                       type="button"
-                      disabled={!item.domain || !enablePreview || previewLoading}
+                      disabled={
+                        !item.domain ||
+                        !enablePreview ||
+                        previewLoading ||
+                        item.liveStatus !== "live"
+                      }
                       onClick={() => item.domain && startPreview(item.domain)}
                     >
                       Stream

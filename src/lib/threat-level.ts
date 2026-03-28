@@ -1,10 +1,15 @@
-import type { LLMAnalysis, PassiveChecks, ThreatLevel } from "@/types";
+import type { LLMAnalysis, PassiveChecks, ThreatLevel, UrlscanVerdict } from "@/types";
 
 export function calcThreatLevel(
   llm: LLMAnalysis,
   passive: PassiveChecks,
-  hasLoginForm: boolean
+  hasLoginForm: boolean,
+  urlscan?: UrlscanVerdict | null
 ): ThreatLevel {
+  if (urlscan?.verdictMalicious) {
+    return "Critical";
+  }
+
   if (llm.squatterCategory === "Credential Harvester") {
     return "Critical";
   }
@@ -12,7 +17,8 @@ export function calcThreatLevel(
   if (
     llm.squatterCategory === "Malware Drop" ||
     llm.manipulationScore > 75 ||
-    ((passive.domainAgeDays ?? 999) < 14 && (hasLoginForm || llm.credentialIntent))
+    ((passive.domainAgeDays ?? 999) < 14 && (hasLoginForm || llm.credentialIntent)) ||
+    (urlscan?.verdictScore ?? 0) >= 70
   ) {
     return "High";
   }
@@ -20,7 +26,8 @@ export function calcThreatLevel(
   if (
     llm.manipulationScore >= 40 ||
     (!passive.hasSSL && passive.redirectCount > 1) ||
-    ((passive.domainAgeDays ?? 999) < 45 && passive.dnsResolved)
+    ((passive.domainAgeDays ?? 999) < 45 && passive.dnsResolved) ||
+    (urlscan?.verdictScore ?? 0) >= 35
   ) {
     return "Medium";
   }
@@ -31,8 +38,13 @@ export function calcThreatLevel(
 export function calcVariantThreatLevel(
   llm: LLMAnalysis,
   visualSimilarity: number,
-  passive?: PassiveChecks
+  passive?: PassiveChecks,
+  urlscan?: UrlscanVerdict | null
 ): ThreatLevel {
+  if (urlscan?.verdictMalicious) {
+    return "Critical";
+  }
+
   if (visualSimilarity > 80) {
     return "Critical";
   }
@@ -56,7 +68,8 @@ export function calcVariantThreatLevel(
   if (
     llm.manipulationScore >= 45 ||
     visualSimilarity > 40 ||
-    ((passive?.domainAgeDays ?? 999) < 30 && passive?.dnsResolved)
+    ((passive?.domainAgeDays ?? 999) < 30 && passive?.dnsResolved) ||
+    (urlscan?.verdictScore ?? 0) >= 35
   ) {
     return "Medium";
   }
