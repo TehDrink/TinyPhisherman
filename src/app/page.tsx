@@ -379,7 +379,7 @@ function ScanPanel({
     if (loading && previewLoading) return 45;
     if (loading) return 72;
     if (previewLoading) return 24;
-    return 8;
+    return 0;
   }, [error, loading, previewLoading, result]);
 
   const [ocrImage, setOcrImage] = useState<File | null>(null);
@@ -904,7 +904,7 @@ function GeneratePanel({
     if (result) return 100;
     if (previewLoading) return 85;
     if (loading) return 55;
-    return 8;
+    return 0;
   }, [error, loading, previewLoading, result]);
 
   return (
