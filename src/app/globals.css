@@ -128,3 +128,388 @@
     @apply font-sans;
   }
 }
+
+/* TinyPhisherman UI: start */
+:root {
+  color-scheme: light;
+  --tp-bg: #f6f6f4;
+  --tp-surface: #ffffff;
+  --tp-text: #1f2a33;
+  --tp-muted: #5f6b76;
+  --tp-border: #e2e2dc;
+  --tp-accent: #1b7f6e;
+  --tp-accent-soft: rgba(27, 127, 110, 0.12);
+  --tp-tone-low: #2f7d50;
+  --tp-tone-medium: #b26a00;
+  --tp-tone-high: #c05a1a;
+  --tp-tone-critical: #c0392b;
+  --tp-tone-low-soft: rgba(47, 125, 80, 0.14);
+  --tp-tone-medium-soft: rgba(178, 106, 0, 0.14);
+  --tp-tone-high-soft: rgba(192, 90, 26, 0.14);
+  --tp-tone-critical-soft: rgba(192, 57, 43, 0.14);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-space-grotesk), sans-serif;
+  background: var(--tp-bg);
+  color: var(--tp-text);
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px 20px 56px;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--tp-border);
+  border-radius: 12px;
+  background: var(--tp-surface);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-mark {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  object-fit: cover;
+  display: block;
+  border: 1px solid var(--tp-border);
+  background: var(--tp-accent);
+}
+
+.brand h1 {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.tagline {
+  font-size: 0.9rem;
+  color: var(--tp-muted);
+}
+
+main {
+  display: grid;
+  gap: 28px;
+  margin-top: 28px;
+}
+
+.intro h2 {
+  font-size: clamp(1.8rem, 3vw, 2.4rem);
+  margin-bottom: 10px;
+}
+
+.intro p {
+  color: var(--tp-muted);
+  max-width: 680px;
+  line-height: 1.6;
+}
+
+.pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.pill {
+  background: var(--tp-accent-soft);
+  color: var(--tp-accent);
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.tabs {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tab {
+  border: 1px solid var(--tp-border);
+  background: var(--tp-surface);
+  padding: 10px 14px;
+  border-radius: 999px;
+  font-weight: 600;
+  color: var(--tp-muted);
+  cursor: pointer;
+}
+
+.tab.active {
+  border-color: var(--tp-accent);
+  color: var(--tp-accent);
+  background: var(--tp-accent-soft);
+}
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.card {
+  border: 1px solid var(--tp-border);
+  border-radius: 12px;
+  background: var(--tp-surface);
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.card h3 {
+  font-size: 1.2rem;
+}
+
+.field {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+input[type="text"] {
+  border: 1px solid var(--tp-border);
+  border-radius: 10px;
+  padding: 12px 12px;
+  font-size: 0.95rem;
+  background: #fff;
+}
+
+.options {
+  display: grid;
+  gap: 8px;
+  color: var(--tp-muted);
+  font-size: 0.92rem;
+}
+
+.options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn {
+  border: 1px solid var(--tp-accent);
+  background: var(--tp-accent);
+  color: #fff;
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.help {
+  color: var(--tp-muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.7rem;
+  color: var(--tp-muted);
+  margin-bottom: 4px;
+}
+
+.threat-badge {
+  border: 1px solid var(--tp-border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.tone-low {
+  color: var(--tp-tone-low);
+}
+
+.tone-medium {
+  color: var(--tp-tone-medium);
+}
+
+.tone-high {
+  color: var(--tp-tone-high);
+}
+
+.tone-critical {
+  color: var(--tp-tone-critical);
+}
+
+.threat-badge.tone-low {
+  background: var(--tp-tone-low-soft);
+  border-color: var(--tp-tone-low);
+}
+
+.threat-badge.tone-medium {
+  background: var(--tp-tone-medium-soft);
+  border-color: var(--tp-tone-medium);
+}
+
+.threat-badge.tone-high {
+  background: var(--tp-tone-high-soft);
+  border-color: var(--tp-tone-high);
+}
+
+.threat-badge.tone-critical {
+  background: var(--tp-tone-critical-soft);
+  border-color: var(--tp-tone-critical);
+}
+
+.simple-list {
+  list-style: disc;
+  padding-left: 18px;
+  color: var(--tp-muted);
+  display: grid;
+  gap: 6px;
+}
+
+.metric-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.metric {
+  border: 1px solid var(--tp-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #fafafa;
+}
+
+.metric-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.metric-note {
+  font-size: 0.78rem;
+  color: var(--tp-muted);
+  margin-top: 4px;
+}
+
+.metric-value {
+  font-size: 1rem;
+  font-weight: 600;
+  text-align: right;
+}
+
+.metric-unit {
+  font-size: 0.8rem;
+  color: var(--tp-muted);
+  margin-left: 4px;
+}
+
+.result-block h4 {
+  font-size: 1rem;
+  margin-bottom: 6px;
+}
+
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.signal {
+  border: 1px solid var(--tp-border);
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+  font-size: 0.85rem;
+  background: #fafafa;
+}
+
+.shot-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--tp-muted);
+  font-size: 0.9rem;
+}
+
+.table {
+  border: 1px solid var(--tp-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.table-head,
+.table-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.table-head {
+  background: #f1f1ee;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+}
+
+.table-row {
+  border-top: 1px solid var(--tp-border);
+  font-size: 0.9rem;
+}
+
+.mono {
+  font-variant-numeric: tabular-nums;
+}
+
+.footer-note {
+  color: var(--tp-muted);
+  font-size: 0.85rem;
+  text-align: center;
+  padding-top: 18px;
+  border-top: 1px solid var(--tp-border);
+}
+
+@media (max-width: 860px) {
+  .site-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 600px) {
+  .tab {
+    width: 100%;
+    text-align: left;
+  }
+}
+
+/* TinyPhisherman UI: end */
