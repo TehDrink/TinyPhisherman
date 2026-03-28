@@ -424,14 +424,9 @@ function ScanPanel({
     setOcrProgress(0);
     setOcrStatus("booting");
 
-    let worker: {
-      recognize: (file: File) => Promise<any>;
-      terminate: () => Promise<void>;
-    } | null = null;
-
     try {
       const { createWorker } = await import("tesseract.js");
-      worker = await createWorker("eng", 1, {
+      const worker = await createWorker("eng", 1, {
         logger: (message: { status?: string; progress?: number }) => {
           if (typeof message.progress === "number") {
             setOcrProgress(Math.round(message.progress * 100));
@@ -442,25 +437,25 @@ function ScanPanel({
         },
       });
 
-      const { data } = await worker.recognize(ocrImage);
-      const text = data?.text ?? "";
-      setOcrText(text);
+      try {
+        const { data } = await worker.recognize(ocrImage);
+        const text = data?.text ?? "";
+        setOcrText(text);
 
-      const links = extractLinksFromText(text);
-      if (!links.length) {
-        setOcrError("No links detected in the image.");
-        return;
+        const links = extractLinksFromText(text);
+        if (!links.length) {
+          setOcrError("No links detected in the image.");
+        } else {
+          setOcrLinks(links);
+          setScanUrl(links[0]);
+          onScan(links[0]);
+        }
+      } finally {
+        await worker.terminate();
       }
-
-      setOcrLinks(links);
-      setScanUrl(links[0]);
-      onScan(links[0]);
     } catch (err) {
       setOcrError(err instanceof Error ? err.message : "OCR failed.");
     } finally {
-      if (worker) {
-        await worker.terminate();
-      }
       setOcrLoading(false);
       setOcrProgress(null);
       setOcrStatus(null);
