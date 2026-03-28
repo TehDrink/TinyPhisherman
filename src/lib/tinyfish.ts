@@ -4,10 +4,12 @@
  * structured JSON that matches the fields this app needs.
  */
 
+import { TinyFish, EventType } from "@tiny-fish/sdk";
 import type { TinyFishResult } from "@/types";
 
 const TINYFISH_API_URL = process.env.TINYFISH_API_URL ?? "https://agent.tinyfish.ai";
 const TINYFISH_API_KEY = process.env.TINYFISH_API_KEY ?? "";
+const DEFAULT_TIMEOUT_MS = 180_000;
 
 interface TinyFishRunResponse {
   run_id: string | null;
@@ -38,26 +40,36 @@ interface TinyFishStructuredResult {
  */
 export async function visitWithAgent(
   url: string,
-  options: { interact?: boolean } = {}
+  options: { interact?: boolean; timeoutMs?: number } = {}
 ): Promise<TinyFishResult> {
   if (!TINYFISH_API_KEY) {
     throw new Error("Missing TINYFISH_API_KEY.");
   }
 
-  const res = await fetch(`${TINYFISH_API_URL}/v1/automation/run`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-API-Key": TINYFISH_API_KEY,
-    },
-    body: JSON.stringify({
-      url,
-      goal: buildGoal(url, options.interact ?? true),
-      browser_profile: options.interact ? "stealth" : "lite",
-      api_integration: "tinyphisherman",
-    }),
-    signal: AbortSignal.timeout(90_000),
-  });
+  const timeoutMs = resolveTimeoutMs(options.timeoutMs);
+  let res: Response;
+
+  try {
+    res = await fetch(`${TINYFISH_API_URL}/v1/automation/run`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": TINYFISH_API_KEY,
+      },
+      body: JSON.stringify({
+        url,
+        goal: buildGoal(url, options.interact ?? true),
+        browser_profile: options.interact ? "stealth" : "lite",
+        api_integration: "tinyphisherman",
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      throw new Error(`TinyFish request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+    }
+    throw err;
+  }
 
   const data: TinyFishRunResponse = await res.json().catch(() => ({
     run_id: null,
@@ -90,6 +102,51 @@ export async function visitWithAgent(
     hasLoginForm: Boolean(result.has_login_form),
     externalLinks: Array.isArray(result.external_links) ? result.external_links : [],
   };
+}
+
+/**
+ * Starts a streaming run and returns the live preview URL as soon as it appears.
+ * Uses the TinyFish SDK SSE stream. The streaming URL is safe to expose client-side.
+ */
+export async function getStreamingPreviewUrl(
+  url: string,
+  options: { interact?: boolean; timeoutMs?: number } = {}
+): Promise<{ runId: string; streamingUrl: string }> {
+  if (!TINYFISH_API_KEY) {
+    throw new Error("Missing TINYFISH_API_KEY.");
+  }
+
+  const timeoutMs = resolveTimeoutMs(options.timeoutMs ?? 20_000);
+  const client = new TinyFish();
+
+  const stream = await client.agent.stream({
+    url,
+    goal: buildGoal(url, options.interact ?? true),
+    browser_profile: options.interact ? "stealth" : "lite",
+    api_integration: "tinyphisherman",
+  });
+
+  const timeoutAt = Date.now() + timeoutMs;
+
+  for await (const event of stream as AsyncIterable<any>) {
+    if (event?.type === EventType.STREAMING_URL || event?.type === "STREAMING_URL") {
+      const streamingUrl = event.streaming_url ?? event.streamingUrl ?? "";
+      const runId = event.run_id ?? event.runId ?? "";
+      if (streamingUrl) {
+        return { runId, streamingUrl };
+      }
+    }
+
+    if (event?.type === EventType.COMPLETE || event?.type === "COMPLETE") {
+      break;
+    }
+
+    if (Date.now() > timeoutAt) {
+      break;
+    }
+  }
+
+  throw new Error("Timed out waiting for TinyFish streaming URL.");
 }
 
 /**
@@ -182,4 +239,17 @@ function asStringArray(value: unknown): string[] | undefined {
 
 function toError(reason: unknown): Error {
   return reason instanceof Error ? reason : new Error("TinyFish visit failed.");
+}
+
+function resolveTimeoutMs(explicit?: number): number {
+  const envValue = Number(process.env.TINYFISH_TIMEOUT_MS);
+  const base =
+    Number.isFinite(envValue) && envValue > 0 ? Math.floor(envValue) : DEFAULT_TIMEOUT_MS;
+  const chosen = Number.isFinite(explicit) && (explicit ?? 0) > 0 ? explicit! : base;
+  return Math.max(10_000, Math.floor(chosen));
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === "AbortError" || err.message.toLowerCase().includes("aborted");
 }
