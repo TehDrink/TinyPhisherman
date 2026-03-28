@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { discoverCirclCandidates } from "@/lib/circl";
+import { discoverViaCertTransparency } from "@/lib/certstream";
 
 const execFileAsync = promisify(execFile);
 
@@ -57,14 +58,35 @@ export function generateTyposquats(domain: string): string[] {
 export async function discoverTyposquatCandidates(domain: string): Promise<{
   method: string;
   candidates: string[];
+  // Domains discovered via CT logs carry a cert issuance date so the hunt
+  // route can boost their ranking (recently-issued = higher risk).
+  certIssuedAt: Map<string, string>;
 }> {
   const dnstwistPath = process.env.DNSTWIST_PATH ?? "dnstwist";
-  const circlCandidates = await discoverCirclCandidates(domain);
-  const discovered = new Set<string>(circlCandidates.filter((entry) => entry !== domain));
   const methods = new Set<string>();
 
-  if (circlCandidates.length > 0) {
-    methods.add("circl");
+  // Run all passive discovery sources in parallel — they are independent.
+  const [circlCandidates, ctResults] = await Promise.all([
+    discoverCirclCandidates(domain),
+    discoverViaCertTransparency(domain),
+  ]);
+
+  const discovered = new Set<string>();
+  const certIssuedAt = new Map<string, string>();
+
+  for (const c of circlCandidates) {
+    if (c !== domain) {
+      discovered.add(c);
+      methods.add("circl");
+    }
+  }
+
+  for (const { domain: ctDomain, certIssuedAt: issuedAt } of ctResults) {
+    if (ctDomain !== domain) {
+      discovered.add(ctDomain);
+      if (issuedAt) certIssuedAt.set(ctDomain, issuedAt);
+      methods.add("crt.sh");
+    }
   }
 
   try {
@@ -73,32 +95,29 @@ export async function discoverTyposquatCandidates(domain: string): Promise<{
       maxBuffer: 2_000_000,
     });
     const parsed = JSON.parse(stdout) as Array<{ domain?: string; fqdn?: string }>;
-    const candidates = parsed
-      .map((entry) => entry.domain ?? entry.fqdn ?? "")
-      .filter((entry) => entry && entry !== domain);
-
-    if (candidates.length > 0) {
-      candidates.forEach((candidate) => discovered.add(candidate));
-      methods.add("dnstwist");
-      return {
-        method: Array.from(methods).join("+"),
-        candidates: Array.from(discovered),
-      };
+    for (const entry of parsed) {
+      const candidate = entry.domain ?? entry.fqdn ?? "";
+      if (candidate && candidate !== domain) {
+        discovered.add(candidate);
+        methods.add("dnstwist");
+      }
     }
   } catch {
-    // Fallback below.
+    // dnstwist unavailable — CT + CIRCL results are sufficient.
   }
 
   if (discovered.size > 0) {
     return {
       method: Array.from(methods).join("+"),
       candidates: Array.from(discovered),
+      certIssuedAt,
     };
   }
 
   return {
     method: "heuristic",
     candidates: generateTyposquats(domain),
+    certIssuedAt: new Map(),
   };
 }
 

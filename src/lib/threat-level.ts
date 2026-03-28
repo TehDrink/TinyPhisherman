@@ -3,7 +3,7 @@ import type { LLMAnalysis, PassiveChecks, ThreatLevel, UrlscanVerdict } from "@/
 export function calcThreatLevel(
   llm: LLMAnalysis,
   passive: PassiveChecks,
-  hasLoginForm: boolean,
+  offDomainSubmit: boolean,
   urlscan?: UrlscanVerdict | null
 ): ThreatLevel {
   if (urlscan?.verdictMalicious) {
@@ -17,7 +17,7 @@ export function calcThreatLevel(
   if (
     llm.squatterCategory === "Malware Drop" ||
     llm.manipulationScore > 75 ||
-    ((passive.domainAgeDays ?? 999) < 14 && (hasLoginForm || llm.credentialIntent)) ||
+    ((passive.domainAgeDays ?? 999) < 14 && (offDomainSubmit || llm.credentialIntent)) ||
     (urlscan?.verdictScore ?? 0) >= 70
   ) {
     return "High";

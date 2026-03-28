@@ -98,7 +98,7 @@ function toneFromThreat(level?: string): Tone {
   if (value === "high") return "high";
   if (value === "medium") return "medium";
   if (value === "low") return "low";
-  return "medium";
+  return "low"; // "Unknown" / undefined → neutral, not a false medium alert
 }
 
 function toneFromScore(score?: number): Tone {
@@ -737,6 +737,8 @@ function GeneratePanel({
   loading,
   error,
   result,
+  huntProgress,
+  huntMessage,
 }: {
   domain: string;
   setDomain: (value: string) => void;
@@ -744,6 +746,8 @@ function GeneratePanel({
   loading: boolean;
   error: string | null;
   result: HuntResult | null;
+  huntProgress: number;
+  huntMessage: string;
 }) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -842,70 +846,71 @@ function GeneratePanel({
     };
   }, [enablePreview, previewVariant?.domain, previewVariant?.liveStatus]);
 
+  // Derive per-stage status from the current hunt progress percentage.
+  // Stages: discovery 5–18%, passive_triage 22–38%, tinyfish 38–76%, analysis 76–95%
+  const stageStatus = (startPct: number, endPct: number): ActivityItem["status"] => {
+    if (error) return huntProgress >= endPct ? "error" : "pending";
+    if (result) return "done";
+    if (huntProgress >= endPct) return "done";
+    if (huntProgress >= startPct) return "active";
+    return "pending";
+  };
+
   const activityItems = useMemo<ActivityItem[]>(() => {
-    const items: ActivityItem[] = [
+    return [
       {
         label: "Candidate generation",
-        detail: loading
-          ? "Enumerating typos, homographs, and TLD lookalikes."
-          : result
-            ? `Discovery completed via ${result.discoveryMethod ?? "fallback logic"}.`
-            : "Waiting for a protected domain.",
-        status: loading ? "active" : result ? "done" : "pending",
+        detail: result
+          ? `Completed via ${result.discoveryMethod ?? "fallback"}.`
+          : huntProgress >= 15
+            ? huntMessage
+            : loading
+              ? "Querying CT logs, CIRCL, and dnstwist…"
+              : "Waiting for a protected domain.",
+        status: stageStatus(5, 18),
       },
       {
         label: "Passive triage",
-        detail: loading
-          ? "Ranking live domains by DNS, age, and TLS signals."
-          : result
-            ? `${liveCount} live variants remained after triage.`
-            : "No shortlist yet.",
-        status: loading ? "active" : result ? "done" : "pending",
+        detail: result
+          ? `${liveCount} live variants after triage.`
+          : huntProgress >= 22 && huntProgress < 76
+            ? huntMessage
+            : result
+              ? `${liveCount} live variants after triage.`
+              : "DNS, age, TLS, and URLscan checks pending.",
+        status: stageStatus(22, 38),
       },
       {
         label: "TinyFish verification",
         detail: previewError
           ? previewError
-          : previewLoading
-            ? `Streaming preview for ${previewTarget ?? "shortlisted domain"}.`
-            : previewVariant?.domain
-              ? previewVariant.liveStatus === "live"
-                ? `Most suspicious live variant: ${previewVariant.domain}.`
-                : `Top ranked variant ${previewVariant.domain} was triaged without TinyFish preview.`
-              : "Shortlisted variants will be verified here.",
+          : result
+            ? previewVariant?.domain
+              ? `Most suspicious variant: ${previewVariant.domain}.`
+              : "Verification complete."
+            : huntProgress >= 38 && huntProgress < 76
+              ? huntMessage
+              : previewLoading
+                ? `Streaming preview for ${previewTarget ?? "top variant"}.`
+                : "Shortlisted variants will be verified here.",
         status: previewError
           ? "error"
-          : previewLoading
-            ? "active"
-            : previewVariant?.domain
-              ? previewVariant.liveStatus === "live"
-                ? "done"
-                : "pending"
-              : loading
-                ? "active"
-                : "pending",
+          : stageStatus(38, 76),
+      },
+      {
+        label: "LLM analysis",
+        detail: result
+          ? "Threat scoring complete."
+          : huntProgress >= 76
+            ? huntMessage
+            : "LLM scoring pending.",
+        status: stageStatus(76, 95),
       },
     ];
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [error, huntMessage, huntProgress, liveCount, loading, previewError, previewLoading, previewTarget, previewVariant?.domain, result]);
 
-    return items;
-  }, [
-    liveCount,
-    loading,
-    previewError,
-    previewLoading,
-    previewTarget,
-    previewVariant?.domain,
-    previewVariant?.liveStatus,
-    result,
-  ]);
-
-  const progress = useMemo(() => {
-    if (error) return 100;
-    if (result) return 100;
-    if (previewLoading) return 85;
-    if (loading) return 55;
-    return 0;
-  }, [error, loading, previewLoading, result]);
+  const progress = error ? 100 : result ? 100 : huntProgress;
 
   return (
     <div className="workspace">
@@ -966,7 +971,7 @@ function GeneratePanel({
           title="Hunt pipeline"
           progress={progress}
           items={activityItems}
-          activeTarget={previewTarget ?? previewVariant?.domain ?? domain}
+          activeTarget={loading ? huntMessage || domain : previewTarget ?? previewVariant?.domain ?? domain}
         />
 
         <EvidenceCard title="Ranked hunt summary">
@@ -1137,6 +1142,8 @@ export default function Home() {
   const [huntResult, setHuntResult] = useState<HuntResult | null>(null);
   const [huntError, setHuntError] = useState<string | null>(null);
   const [huntLoading, setHuntLoading] = useState(false);
+  const [huntProgress, setHuntProgress] = useState(0);
+  const [huntMessage, setHuntMessage] = useState("");
 
   const introCopy = useMemo(() => {
     if (activeCase === "scan") {
@@ -1212,6 +1219,8 @@ export default function Home() {
     setHuntLoading(true);
     setHuntError(null);
     setHuntResult(null);
+    setHuntProgress(0);
+    setHuntMessage("");
 
     try {
       const res = await fetch("/api/hunt", {
@@ -1219,13 +1228,47 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ domain: target }),
       });
-      const json = (await res.json()) as HuntApiResponse;
 
-      if (!res.ok || !json.ok) {
-        throw new Error("error" in json ? json.error : "Hunt failed.");
+      if (!res.body) throw new Error("No response body from hunt API.");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const messages = buffer.split("\n\n");
+        buffer = messages.pop() ?? "";
+
+        for (const message of messages) {
+          const line = message.trim();
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6)) as
+              | { type: "progress"; pct: number; message: string }
+              | { type: "result"; data: HuntResult }
+              | { type: "error"; error: string };
+
+            if (event.type === "progress") {
+              setHuntProgress(event.pct);
+              setHuntMessage(event.message);
+            } else if (event.type === "result") {
+              setHuntResult(event.data);
+              setHuntProgress(100);
+              setHuntMessage("");
+            } else if (event.type === "error") {
+              throw new Error(event.error);
+            }
+          } catch (parseErr) {
+            if (parseErr instanceof Error && parseErr.message !== "Unexpected token") {
+              throw parseErr;
+            }
+          }
+        }
       }
-
-      setHuntResult(json.data);
     } catch (err) {
       setHuntError(err instanceof Error ? err.message : "Hunt failed.");
     } finally {
@@ -1300,6 +1343,8 @@ export default function Home() {
               loading={huntLoading}
               error={huntError}
               result={huntResult}
+              huntProgress={huntProgress}
+              huntMessage={huntMessage}
             />
           )}
         </section>
