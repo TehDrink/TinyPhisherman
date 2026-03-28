@@ -33,21 +33,29 @@ export function calcVariantThreatLevel(
   visualSimilarity: number,
   passive?: PassiveChecks
 ): ThreatLevel {
-  if (visualSimilarity > 80 || llm.squatterCategory === "Credential Harvester") {
+  if (visualSimilarity > 80) {
     return "Critical";
   }
 
-  if (
-    llm.squatterCategory === "Malware Drop" ||
-    visualSimilarity > 60 ||
-    llm.manipulationScore > 75
-  ) {
+  if (llm.squatterCategory === "Credential Harvester") {
+    return "Critical";
+  }
+
+  if (llm.squatterCategory === "Malware Drop") {
+    return "High";
+  }
+
+  if (llm.squatterCategory === "Parked/Ads") {
+    return "Low";
+  }
+
+  if (llm.manipulationScore > 75 || visualSimilarity > 60) {
     return "High";
   }
 
   if (
-    visualSimilarity > 40 ||
     llm.manipulationScore >= 45 ||
+    visualSimilarity > 40 ||
     ((passive?.domainAgeDays ?? 999) < 30 && passive?.dnsResolved)
   ) {
     return "Medium";

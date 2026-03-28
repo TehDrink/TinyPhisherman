@@ -4,7 +4,6 @@
  * structured JSON that matches the fields this app needs.
  */
 
-import { TinyFish, EventType } from "@tiny-fish/sdk";
 import type { TinyFishResult } from "@/types";
 
 const TINYFISH_API_URL = process.env.TINYFISH_API_URL ?? "https://agent.tinyfish.ai";
@@ -22,6 +21,25 @@ interface TinyFishRunResponse {
   error?: {
     code?: string;
     message?: string;
+  } | null;
+}
+
+interface TinyFishAsyncRunResponse {
+  run_id: string | null;
+  error?: {
+    message?: string;
+  } | null;
+}
+
+interface TinyFishRunStatusResponse {
+  run_id?: string | null;
+  status?: string;
+  streaming_url?: string | null;
+  result?: unknown;
+  resultJson?: unknown;
+  error?: {
+    message?: string;
+    code?: string;
   } | null;
 }
 
@@ -116,37 +134,10 @@ export async function getStreamingPreviewUrl(
     throw new Error("Missing TINYFISH_API_KEY.");
   }
 
-  const timeoutMs = resolveTimeoutMs(options.timeoutMs ?? 20_000);
-  const client = new TinyFish();
-
-  const stream = await client.agent.stream({
-    url,
-    goal: buildGoal(url, options.interact ?? true),
-    browser_profile: options.interact ? "stealth" : "lite",
-    api_integration: "tinyphisherman",
-  });
-
-  const timeoutAt = Date.now() + timeoutMs;
-
-  for await (const event of stream as AsyncIterable<any>) {
-    if (event?.type === EventType.STREAMING_URL || event?.type === "STREAMING_URL") {
-      const streamingUrl = event.streaming_url ?? event.streamingUrl ?? "";
-      const runId = event.run_id ?? event.runId ?? "";
-      if (streamingUrl) {
-        return { runId, streamingUrl };
-      }
-    }
-
-    if (event?.type === EventType.COMPLETE || event?.type === "COMPLETE") {
-      break;
-    }
-
-    if (Date.now() > timeoutAt) {
-      break;
-    }
-  }
-
-  throw new Error("Timed out waiting for TinyFish streaming URL.");
+  const timeoutMs = resolveTimeoutMs(options.timeoutMs ?? 60_000);
+  const runId = await startAsyncRun(url, options.interact ?? true);
+  const streamingUrl = await pollStreamingUrl(runId, timeoutMs);
+  return { runId, streamingUrl };
 }
 
 /**
@@ -239,6 +230,74 @@ function asStringArray(value: unknown): string[] | undefined {
 
 function toError(reason: unknown): Error {
   return reason instanceof Error ? reason : new Error("TinyFish visit failed.");
+}
+
+async function startAsyncRun(url: string, interact: boolean): Promise<string> {
+  const res = await fetch(`${TINYFISH_API_URL}/v1/automation/run-async`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": TINYFISH_API_KEY,
+    },
+    body: JSON.stringify({
+      url,
+      goal: buildGoal(url, interact),
+      browser_profile: interact ? "stealth" : "lite",
+      api_integration: "tinyphisherman",
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  const data: TinyFishAsyncRunResponse = await res.json().catch(() => ({
+    run_id: null,
+    error: { message: "TinyFish returned invalid JSON." },
+  }));
+
+  if (!res.ok) {
+    const message = data.error?.message ?? `TinyFish API error ${res.status}`;
+    throw new Error(message);
+  }
+
+  if (!data.run_id) {
+    throw new Error(data.error?.message ?? "TinyFish did not return a run_id.");
+  }
+
+  return data.run_id;
+}
+
+async function pollStreamingUrl(runId: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const run = await getRunStatus(runId);
+    const streamingUrl = run.streaming_url ?? null;
+    if (streamingUrl) return streamingUrl;
+
+    if (run.status && ["FAILED", "CANCELLED"].includes(run.status)) {
+      throw new Error(run.error?.message ?? "TinyFish run failed.");
+    }
+
+    await sleep(1200);
+  }
+
+  throw new Error("Timed out waiting for TinyFish streaming URL.");
+}
+
+async function getRunStatus(runId: string): Promise<TinyFishRunStatusResponse> {
+  const res = await fetch(`${TINYFISH_API_URL}/v1/runs/${runId}`, {
+    headers: { "X-API-Key": TINYFISH_API_KEY },
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`TinyFish run lookup failed (${res.status}).`);
+  }
+
+  return (await res.json()) as TinyFishRunStatusResponse;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function resolveTimeoutMs(explicit?: number): number {

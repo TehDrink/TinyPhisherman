@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Tone = "low" | "medium" | "high" | "critical";
 
@@ -44,20 +44,40 @@ type ScanApiResponse =
   | { ok: true; data: ScanResult }
   | { ok: false; error: string };
 
+type TyposquatVariant = {
+  domain?: string;
+  threatLevel?: string;
+  visualSimilarity?: number;
+  manipulationScore?: number;
+  squatterCategory?: string;
+  screenshot?: string;
+  liveStatus?: string;
+  reasoning?: string;
+  passiveChecks?: PassiveChecks;
+  finalUrl?: string;
+  pageTitle?: string;
+  evidenceSnippets?: EvidenceSnippet[];
+  impersonatedBrand?: string | null;
+};
+
+type HuntResult = {
+  originalDomain?: string;
+  originalScreenshot?: string;
+  variants?: TyposquatVariant[];
+  huntedAt?: string;
+  discoveryMethod?: string;
+};
+
+type HuntApiResponse =
+  | { ok: true; data: HuntResult }
+  | { ok: false; error: string };
+
 const scanEvidenceFallback = [
   "Form action posts to off-domain",
   "Domain registered 9 days ago",
   "Hidden iframe on submit",
   "Brand assets hotlinked",
   "TLS hostname mismatch",
-];
-
-const generateResults = [
-  { domain: "tinyfish-login-secure.com", risk: "High" },
-  { domain: "tinyfish-verify.io", risk: "High" },
-  { domain: "support-tinyf1sh.com", risk: "Medium" },
-  { domain: "tinyfish-account-check.net", risk: "Medium" },
-  { domain: "login-tinyfishhelp.com", risk: "Medium" },
 ];
 
 function toneFromThreat(level?: string): Tone {
@@ -306,7 +326,121 @@ function ScanPanel({
   );
 }
 
-function GeneratePanel() {
+function GeneratePanel({
+  domain,
+  setDomain,
+  onHunt,
+  loading,
+  error,
+  result,
+}: {
+  domain: string;
+  setDomain: (value: string) => void;
+  onHunt: () => void;
+  loading: boolean;
+  error: string | null;
+  result: HuntResult | null;
+}) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewTarget, setPreviewTarget] = useState<string | null>(null);
+  const [enablePreview, setEnablePreview] = useState(true);
+
+  const variants = result?.variants ?? [];
+  const total = variants.length;
+  const liveCount = variants.filter((item) => item.liveStatus === "live").length;
+  const criticalCount = variants.filter(
+    (item) => item.threatLevel?.toLowerCase() === "critical"
+  ).length;
+  const methodLabel = result?.discoveryMethod ? result.discoveryMethod.toUpperCase() : "—";
+  const topVariant = variants[0]?.domain ?? null;
+
+  const originalShot =
+    result?.originalScreenshot && result.originalScreenshot.length > 0
+      ? `data:image/png;base64,${result.originalScreenshot}`
+      : null;
+
+  const startPreview = async (target: string) => {
+    setPreviewTarget(target);
+    setPreviewUrl(null);
+    setPreviewError(null);
+    setPreviewLoading(true);
+
+    try {
+      const res = await fetch(`/api/scan/preview?url=${encodeURIComponent(target)}`);
+      const json = (await res.json()) as
+        | { ok: true; data: { streamingUrl: string } }
+        | { ok: false; error: string };
+
+      if (!res.ok || !json.ok) {
+        throw new Error("error" in json ? json.error : "Preview failed.");
+      }
+
+      setPreviewUrl(json.data.streamingUrl);
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : "Preview failed.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!enablePreview) {
+      setPreviewUrl(null);
+      setPreviewError(null);
+      setPreviewLoading(false);
+      setPreviewTarget(null);
+      return;
+    }
+
+    if (!topVariant) {
+      setPreviewUrl(null);
+      setPreviewError(null);
+      setPreviewLoading(false);
+      setPreviewTarget(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const run = async () => {
+      setPreviewTarget(topVariant);
+      setPreviewUrl(null);
+      setPreviewError(null);
+      setPreviewLoading(true);
+
+      try {
+        const res = await fetch(`/api/scan/preview?url=${encodeURIComponent(topVariant)}`);
+        const json = (await res.json()) as
+          | { ok: true; data: { streamingUrl: string } }
+          | { ok: false; error: string };
+
+        if (!res.ok || !json.ok) {
+          throw new Error("error" in json ? json.error : "Preview failed.");
+        }
+
+        if (!cancelled) {
+          setPreviewUrl(json.data.streamingUrl);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setPreviewError(err instanceof Error ? err.message : "Preview failed.");
+        }
+      } finally {
+        if (!cancelled) {
+          setPreviewLoading(false);
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enablePreview, topVariant]);
+
   return (
     <div className="panel-grid">
       <div className="card">
@@ -314,7 +448,13 @@ function GeneratePanel() {
         <label className="field" htmlFor="legit-url">
           Legit domain to protect
         </label>
-        <input id="legit-url" type="text" placeholder="https://tinyfish.io" />
+        <input
+          id="legit-url"
+          type="text"
+          placeholder="https://tinyfish.io"
+          value={domain}
+          onChange={(event) => setDomain(event.target.value)}
+        />
         <div className="options">
           <label>
             <input type="checkbox" defaultChecked />
@@ -325,9 +465,10 @@ function GeneratePanel() {
             TLD and keyword variants
           </label>
         </div>
-        <button className="btn" type="button">
-          Generate candidates
+        <button className="btn" type="button" onClick={onHunt} disabled={loading}>
+          {loading ? "Generating..." : "Generate candidates"}
         </button>
+        {error ? <p className="status error">{error}</p> : null}
         <p className="help">We validate live hosts in parallel.</p>
       </div>
 
@@ -335,21 +476,110 @@ function GeneratePanel() {
         <div className="result-head">
           <div>
             <p className="eyebrow">High-risk candidates</p>
-            <h3>5 lookalike domains</h3>
+            <h3>{total ? `${total} lookalike domains` : "Awaiting results"}</h3>
           </div>
-          <span className="pill">Needs review</span>
+          <span className="pill">Method {methodLabel}</span>
         </div>
-        <div className="table">
-          <div className="table-head">
-            <span>Domain</span>
-            <span>Risk</span>
+
+        <div className="result-block">
+          <div className="preview-header">
+            <h4>Live browser preview</h4>
+            <label className="preview-toggle">
+              <input
+                type="checkbox"
+                checked={enablePreview}
+                onChange={(event) => setEnablePreview(event.target.checked)}
+              />
+              Enable preview
+            </label>
           </div>
-          {generateResults.map((row) => (
-            <div key={row.domain} className="table-row">
-              <span className="mono">{row.domain}</span>
-              <span>{row.risk}</span>
+          {previewUrl ? (
+            <div className="preview-frame">
+              <iframe
+                title="TinyFish live preview"
+                src={previewUrl}
+                sandbox="allow-scripts allow-same-origin"
+                referrerPolicy="no-referrer"
+              />
             </div>
-          ))}
+          ) : !enablePreview ? (
+            <p className="status">Preview is disabled.</p>
+          ) : previewLoading ? (
+            <p className="status">Starting live preview…</p>
+          ) : (
+            <p className="status">Run a hunt to see live previews.</p>
+          )}
+          {previewTarget ? (
+            <p className="status">Previewing: {previewTarget}</p>
+          ) : null}
+          {previewError ? <p className="status error">{previewError}</p> : null}
+        </div>
+
+        <div className="hunt-stats">
+          <div className="hunt-stat">
+            <span>Variants</span>
+            <strong>{total || 0}</strong>
+          </div>
+          <div className="hunt-stat">
+            <span>Live</span>
+            <strong>{liveCount || 0}</strong>
+          </div>
+          <div className="hunt-stat">
+            <span>Critical</span>
+            <strong>{criticalCount || 0}</strong>
+          </div>
+        </div>
+
+        <div className="result-block">
+          <h4>Original brand snapshot</h4>
+          <div className="shot-row">
+            {originalShot ? (
+              <img className="shot-image" src={originalShot} alt="Original brand screenshot" />
+            ) : (
+              <span className="status">Run a hunt to capture the brand snapshot.</span>
+            )}
+          </div>
+        </div>
+
+        <div className="result-block">
+          <h4>Detected variants</h4>
+          {variants.length ? (
+            <div className="table variant-table">
+              <div className="table-head">
+                <span>Domain</span>
+                <span>Threat</span>
+                <span>Similarity</span>
+                <span>Category</span>
+                <span>Preview</span>
+              </div>
+              {variants.map((item, index) => (
+                <div key={item.domain ?? `variant-${index}`} className="table-row">
+                  <span className="mono">{item.domain ?? "Unknown"}</span>
+                  <span className={`tone-${toneFromThreat(item.threatLevel)}`}>
+                    {item.threatLevel ?? "—"}
+                  </span>
+                  <span>
+                    {typeof item.visualSimilarity === "number"
+                      ? `${item.visualSimilarity}%`
+                      : "—"}
+                  </span>
+                  <span>{item.squatterCategory ?? "Unknown"}</span>
+                  <span>
+                    <button
+                      className="btn btn-ghost"
+                      type="button"
+                      disabled={!item.domain || !enablePreview || previewLoading}
+                      onClick={() => item.domain && startPreview(item.domain)}
+                    >
+                      Preview
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="status">No variants yet. Run a hunt to populate results.</p>
+          )}
         </div>
       </div>
     </div>
@@ -366,6 +596,10 @@ export default function Home() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [useTinyfish, setUseTinyfish] = useState(true);
+  const [huntDomain, setHuntDomain] = useState("");
+  const [huntResult, setHuntResult] = useState<HuntResult | null>(null);
+  const [huntError, setHuntError] = useState<string | null>(null);
+  const [huntLoading, setHuntLoading] = useState(false);
 
   const introCopy = useMemo(() => {
     if (activeCase === "scan") {
@@ -423,6 +657,37 @@ export default function Home() {
       setScanError(err instanceof Error ? err.message : "Scan failed.");
     } finally {
       setScanLoading(false);
+    }
+  };
+
+  const handleHunt = async () => {
+    const target = huntDomain.trim();
+    if (!target) {
+      setHuntError("Please enter a domain to protect.");
+      return;
+    }
+
+    setHuntLoading(true);
+    setHuntError(null);
+    setHuntResult(null);
+
+    try {
+      const res = await fetch("/api/hunt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domain: target }),
+      });
+      const json = (await res.json()) as HuntApiResponse;
+
+      if (!res.ok || !json.ok) {
+        throw new Error("error" in json ? json.error : "Hunt failed.");
+      }
+
+      setHuntResult(json.data);
+    } catch (err) {
+      setHuntError(err instanceof Error ? err.message : "Hunt failed.");
+    } finally {
+      setHuntLoading(false);
     }
   };
 
@@ -486,7 +751,14 @@ export default function Home() {
               setUseTinyfish={setUseTinyfish}
             />
           ) : (
-            <GeneratePanel />
+            <GeneratePanel
+              domain={huntDomain}
+              setDomain={setHuntDomain}
+              onHunt={handleHunt}
+              loading={huntLoading}
+              error={huntError}
+              result={huntResult}
+            />
           )}
         </section>
 
