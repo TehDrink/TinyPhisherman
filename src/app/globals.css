@@ -336,6 +336,81 @@ input[type="text"] {
   background: #fff;
 }
 
+input[type="file"] {
+  border: 1px dashed var(--tp-border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  font-size: 0.85rem;
+  background: #f8faff;
+}
+
+.upload-block {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px dashed var(--tp-border);
+  background: #f9fbff;
+}
+
+.upload-preview {
+  width: 100%;
+  max-height: 180px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--tp-border);
+}
+
+.upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.extract-list {
+  display: grid;
+  gap: 8px;
+}
+
+.link-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.link-pill {
+  border: 1px solid var(--tp-border);
+  background: #fff;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 0.84rem;
+  color: var(--tp-accent);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ocr-text {
+  border: 1px solid var(--tp-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  font-size: 0.82rem;
+  color: var(--tp-muted);
+}
+
+.ocr-text summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--tp-accent);
+  margin-bottom: 8px;
+}
+
+.ocr-text pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: "IBM Plex Mono", "Courier New", monospace;
+}
+
 .options {
   display: grid;
   gap: 8px;

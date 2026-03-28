@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 
 type Tone = "low" | "medium" | "high" | "critical";
 
@@ -139,6 +139,64 @@ function summarizePassiveChecks(passive?: PassiveChecks) {
   return fragments.join(" • ");
 }
 
+function trimUrlPunctuation(value: string) {
+  return value.replace(/^[\s<([{'"`]+/, "").replace(/[)\]}>",'.!?;:]+$/g, "");
+}
+
+function normalizeExtractedUrl(value: string, defaultScheme?: "http" | "https") {
+  const trimmed = trimUrlPunctuation(value.trim());
+  if (!trimmed) return null;
+  if (trimmed.includes("@") && !/^https?:\/\//i.test(trimmed)) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^www\./i.test(trimmed)) return `https://${trimmed}`;
+  if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(\/\S*)?$/i.test(trimmed)) {
+    const scheme = defaultScheme ?? "https";
+    return `${scheme}://${trimmed}`;
+  }
+  return null;
+}
+
+function sanitizeOcrText(text: string) {
+  let cleaned = text;
+  cleaned = cleaned.replace(/h\s*t\s*t\s*p\s*s?\s*:\s*\/\s*\//gi, (match) => {
+    const hasS = /s/i.test(match);
+    return `http${hasS ? "s" : ""}://`;
+  });
+  cleaned = cleaned.replace(/https?:\/\/\s+/gi, (match) => match.replace(/\s+/g, ""));
+  cleaned = cleaned.replace(/https?:\/\/\./gi, (match) => match.replace(/\./g, ""));
+  cleaned = cleaned.replace(/(\w)\s*\.\s*(\w)/g, "$1.$2");
+  return cleaned;
+}
+
+function extractLinksFromText(text: string) {
+  const links = new Set<string>();
+  const cleanedText = sanitizeOcrText(text);
+  const urlRegex = /\b((?:https?:\/\/|www\.)[^\s<>"'()]+)/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = urlRegex.exec(cleanedText)) !== null) {
+    const normalized = normalizeExtractedUrl(match[1]);
+    if (normalized) links.add(normalized);
+  }
+
+  if (links.size === 0) {
+    const defaultScheme = cleanedText.includes("http://")
+      ? "http"
+      : cleanedText.includes("https://")
+        ? "https"
+        : undefined;
+    const domainRegex =
+      /\b([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9-]{2,})+)(\/[^\s<>"'()]*)?/gi;
+    while ((match = domainRegex.exec(cleanedText)) !== null) {
+      const candidate = `${match[1]}${match[2] ?? ""}`;
+      const normalized = normalizeExtractedUrl(candidate, defaultScheme);
+      if (normalized) links.add(normalized);
+    }
+  }
+
+  return Array.from(links);
+}
+
 function ThreatBadge({ label, tone }: { label: string; tone: Tone }) {
   return <span className={`threat-badge tone-${tone}`}>{label}</span>;
 }
@@ -239,7 +297,7 @@ function ScanPanel({
 }: {
   scanUrl: string;
   setScanUrl: (value: string) => void;
-  onScan: () => void;
+  onScan: (overrideUrl?: string) => void;
   loading: boolean;
   error: string | null;
   result: ScanResult | null;
@@ -318,6 +376,91 @@ function ScanPanel({
     return 8;
   }, [error, loading, previewLoading, result]);
 
+  const [ocrImage, setOcrImage] = useState<File | null>(null);
+  const [ocrPreview, setOcrPreview] = useState<string | null>(null);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState<number | null>(null);
+  const [ocrStatus, setOcrStatus] = useState<string | null>(null);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [ocrLinks, setOcrLinks] = useState<string[]>([]);
+  const [ocrText, setOcrText] = useState<string>("");
+
+  useEffect(() => {
+    if (!ocrImage) {
+      setOcrPreview(null);
+      return;
+    }
+    const url = URL.createObjectURL(ocrImage);
+    setOcrPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [ocrImage]);
+
+  const handleImageUpload = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    setOcrImage(file);
+    setOcrError(null);
+    setOcrLinks([]);
+    setOcrText("");
+    setOcrProgress(null);
+    setOcrStatus(null);
+  };
+
+  const handleExtractLink = async () => {
+    if (!ocrImage) {
+      setOcrError("Upload a screenshot before extracting text.");
+      return;
+    }
+
+    setOcrLoading(true);
+    setOcrError(null);
+    setOcrLinks([]);
+    setOcrText("");
+    setOcrProgress(0);
+    setOcrStatus("booting");
+
+    let worker: {
+      recognize: (file: File) => Promise<any>;
+      terminate: () => Promise<void>;
+    } | null = null;
+
+    try {
+      const { createWorker } = await import("tesseract.js");
+      worker = await createWorker("eng", 1, {
+        logger: (message: { status?: string; progress?: number }) => {
+          if (typeof message.progress === "number") {
+            setOcrProgress(Math.round(message.progress * 100));
+          }
+          if (message.status) {
+            setOcrStatus(message.status.replace(/_/g, " "));
+          }
+        },
+      });
+
+      const { data } = await worker.recognize(ocrImage);
+      const text = data?.text ?? "";
+      setOcrText(text);
+
+      const links = extractLinksFromText(text);
+      if (!links.length) {
+        setOcrError("No links detected in the image.");
+        return;
+      }
+
+      setOcrLinks(links);
+      setScanUrl(links[0]);
+      onScan(links[0]);
+    } catch (err) {
+      setOcrError(err instanceof Error ? err.message : "OCR failed.");
+    } finally {
+      if (worker) {
+        await worker.terminate();
+      }
+      setOcrLoading(false);
+      setOcrProgress(null);
+      setOcrStatus(null);
+    }
+  };
+
   return (
     <div className="workspace">
       <aside className="workspace-rail">
@@ -339,6 +482,60 @@ function ScanPanel({
             value={scanUrl}
             onChange={(event) => setScanUrl(event.target.value)}
           />
+          <div className="upload-block">
+            <div>
+              <p className="eyebrow">Screenshot OCR</p>
+              <p className="status">
+                Upload a screenshot and TinyPhisherman will extract any suspicious links.
+              </p>
+            </div>
+            <input
+              id="scan-image"
+              type="file"
+              accept="image/*"
+              onChange={handleImageUpload}
+            />
+            {ocrPreview ? (
+              <img className="upload-preview" src={ocrPreview} alt="Uploaded screenshot preview" />
+            ) : null}
+            <div className="upload-actions">
+              <button
+                className="btn-ghost"
+                type="button"
+                onClick={handleExtractLink}
+                disabled={ocrLoading || !ocrImage}
+              >
+                {ocrLoading
+                  ? `Extracting${ocrProgress !== null ? ` ${ocrProgress}%` : ""}`
+                  : "Extract link from image"}
+              </button>
+              {ocrStatus ? <span className="status">OCR: {ocrStatus}</span> : null}
+            </div>
+            {ocrError ? <p className="status error">{ocrError}</p> : null}
+            {ocrLinks.length ? (
+              <div className="extract-list">
+                <p className="field">Detected links</p>
+                <div className="link-stack">
+                  {ocrLinks.map((link) => (
+                    <button
+                      key={link}
+                      type="button"
+                      className="link-pill"
+                      onClick={() => onScan(link)}
+                    >
+                      {link}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {ocrText ? (
+              <details className="ocr-text">
+                <summary>Show extracted text</summary>
+                <pre>{ocrText}</pre>
+              </details>
+            ) : null}
+          </div>
           <div className="options">
             <label>
               <input
@@ -353,7 +550,7 @@ function ScanPanel({
               Passive DNS, TLS, and registration checks
             </label>
           </div>
-          <button className="btn" type="button" onClick={onScan} disabled={loading}>
+          <button className="btn" type="button" onClick={() => onScan()} disabled={loading}>
             {loading ? "Running verification..." : "Verify link"}
           </button>
           {error ? <p className="status error">{error}</p> : null}
@@ -914,11 +1111,15 @@ export default function Home() {
     return "An automatic chained hunt that generates typosquats, filters them, and sends the most suspicious live variants to TinyFish.";
   }, [activeCase]);
 
-  const handleScan = async () => {
-    const target = scanUrl.trim();
+  const handleScan = async (overrideUrl?: string) => {
+    const target = (overrideUrl ?? scanUrl).trim();
     if (!target) {
       setScanError("Please enter a URL to scan.");
       return;
+    }
+
+    if (overrideUrl) {
+      setScanUrl(target);
     }
 
     setScanLoading(true);
