@@ -128,7 +128,15 @@ function formatDate(value?: string | null) {
   if (!value) return "Not yet";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  // Use a fixed format so server and client always render the same string.
+  // toLocaleString() differs between Node (server) and the browser locale,
+  // which causes a React hydration mismatch.
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 }
 
 function summarizePassiveChecks(passive?: PassiveChecks) {

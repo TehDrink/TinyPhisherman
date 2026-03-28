@@ -266,18 +266,24 @@ function heuristicAnalysis(
     impersonatedBrand && !domainMatchesBrand && !urlContext.isExactExpectedDomain
   );
 
-  // Off-domain form submission is a strong signal regardless of other context
-  if (offDomainSubmit) {
+  // hasLoginForm = true only for password/OTP/payment fields (SENSITIVE_FIELDS).
+  // A form that only collects email/name/phone is a lead-gen form — normal on ad-farming
+  // pages and should NOT trigger the same scoring as a credential harvester.
+  const hasLeadGenFormOnly = offDomainSubmit && !hasLoginForm;
+
+  if (offDomainSubmit && hasLoginForm) {
+    // Sensitive credentials (password/OTP/payment) going to a different domain — strong signal.
     score += 30;
-    redFlags.push("Form submits credentials to a different domain");
+    redFlags.push("Sensitive credentials submitted to a different domain");
+  } else if (hasLeadGenFormOnly) {
+    // Email/name going off-domain is typical ad-network lead capture — minimal signal.
+    score += 3;
   } else if (hasLoginForm) {
-    // A credential form on a suspicious/off-brand domain is concerning, but on a
-    // legitimate-looking domain it adds very little signal
+    // Sensitive form on-domain: only suspicious if there's a brand/domain mismatch.
     if (deceptiveBrandMismatch || urlContext.isLookalikeToExpected || urlContext.suspiciousScore >= 18) {
       score += 20;
       redFlags.push("Credential form on a suspicious or off-brand domain");
     }
-    // Login form alone on a clean domain: no score bump
   }
 
   if (impersonatedBrand) {
@@ -315,7 +321,6 @@ function heuristicAnalysis(
     text,
     hasLoginForm,
     urlContext,
-    impersonatedBrand,
     credentialIntent,
     deceptiveBrandMismatch
   );
@@ -354,27 +359,41 @@ function categorize(
   text: string,
   hasLoginForm: boolean,
   urlContext: UrlContext,
-  impersonatedBrand: string | null,
   credentialIntent: boolean,
   deceptiveBrandMismatch: boolean
 ): SquatterCategory {
   if (/\b(download|install|setup\.exe|apk|update browser)\b/.test(text)) {
     return "Malware Drop";
   }
-  if (/\b(domain for sale|buy this domain|parking|sponsored listings|ads)\b/.test(text) && !credentialIntent) {
+
+  const looksParked = /\b(domain for sale|buy this domain|parking|sponsored listings|sponsored results|related searches)\b/.test(text);
+  const hasDeceptiveContext = deceptiveBrandMismatch || urlContext.isLookalikeToExpected || urlContext.suspiciousScore >= 18;
+
+  // Parked/ad-farming page: classify as Parked/Ads unless there is BOTH a sensitive
+  // credential form AND a deceptive brand/domain signal. A lead-gen form (email/name)
+  // inside an ad unit on a parked page is not phishing.
+  if (looksParked && !(hasLoginForm && hasDeceptiveContext)) {
     return "Parked/Ads";
   }
+
   if (
     credentialIntent &&
-    (
-      deceptiveBrandMismatch ||
-      urlContext.isLookalikeToExpected ||
-      urlContext.suspiciousScore >= 18 ||
-      (Boolean(impersonatedBrand) && !urlContext.isExactExpectedDomain)
-    )
+    hasLoginForm &&   // must actually have sensitive fields, not just text mentions
+    hasDeceptiveContext
   ) {
     return "Credential Harvester";
   }
+
+  // credentialIntent from text alone (e.g. "login" mentioned in an ad) without a
+  // real sensitive form is not enough to classify as Credential Harvester.
+  if (
+    credentialIntent &&
+    !hasLoginForm &&
+    (deceptiveBrandMismatch || urlContext.isLookalikeToExpected)
+  ) {
+    return "Credential Harvester";
+  }
+
   return "Unknown";
 }
 
